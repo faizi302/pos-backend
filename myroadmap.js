@@ -1,0 +1,37 @@
+Business
+   ↓
+BusinessType
+   ↓
+Brand
+   ↓
+Model
+   ↓
+Category
+   ↓
+Product
+   ↓
+ProductInventory
+   ↓
+┌──────────────────────────────┐
+│ NEXT — MOST IMPORTANT        │
+└──────────────────────────────┘
+   ↓
+Supplier
+   ↓
+Customer
+   ↓
+Purchase
+   ↓
+PurchaseItem
+   ↓
+StockMovement
+   ↓
+Sale / Order
+   ↓
+SaleItem
+   ↓
+Payment
+   ↓
+Expense
+   ↓
+Reports
