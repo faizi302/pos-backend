@@ -3,191 +3,260 @@ import mongoose from "mongoose";
 import SalePayment from "../models/salePayment.js";
 import Sale from "../models/Sale.js";
 import Customer from "../models/Customer.js";
-import Business from "../models/Business.js";
 
 import {
   errorResponse,
   successResponse,
 } from "../utils/apiResponse.js";
 
-// ==================================================
-// HELPER: CHECK SUPER ADMIN
-// ==================================================
+import {
+  getTenantContext,
+  buildTenantBusinessQuery,
+  isValidObjectId,
+} from "../utils/tenantContext.js";
 
-const isSuperAdmin = (req) => {
-  return req.user?.role?.slug === "super-admin";
-};
+// =====================================================
+// HELPERS
+// =====================================================
 
-// ==================================================
-// HELPER: GET BUSINESS ID
-// ==================================================
+const getScope = async (req, forCreate = false) => {
+  const tenant = await getTenantContext(req);
 
-const getBusinessId = (req) => {
-  if (isSuperAdmin(req)) {
-    return req.body.business || req.query.business;
-  }
+  if (tenant.isSuperAdmin) {
+    const tenantOwner =
+      req.body.tenantOwner ||
+      req.query.tenantOwner;
 
-  return req.user?.business?._id || req.user?.business;
-};
+    const business =
+      req.body.business ||
+      req.query.business;
 
-// ==================================================
-// HELPER: VALIDATE BUSINESS
-// ==================================================
+    const businessType =
+      req.body.businessType ||
+      req.query.businessType;
 
-const validateBusiness = async (businessId) => {
-  if (!businessId) {
+    if (forCreate) {
+      if (
+        !tenantOwner ||
+        !business ||
+        !businessType ||
+        !isValidObjectId(tenantOwner) ||
+        !isValidObjectId(business) ||
+        !isValidObjectId(businessType)
+      ) {
+        return null;
+      }
+
+      return {
+        tenant,
+        scope: {
+          tenantOwner,
+          business,
+          businessType,
+        },
+      };
+    }
+
+    const scope = {};
+
+    if (tenantOwner) {
+      if (!isValidObjectId(tenantOwner)) {
+        return null;
+      }
+
+      scope.tenantOwner = tenantOwner;
+    }
+
+    if (business) {
+      if (!isValidObjectId(business)) {
+        return null;
+      }
+
+      scope.business = business;
+    }
+
+    if (businessType) {
+      if (!isValidObjectId(businessType)) {
+        return null;
+      }
+
+      scope.businessType = businessType;
+    }
+
     return {
-      valid: false,
-      message: "Business is required.",
-    };
-  }
-
-  if (!mongoose.Types.ObjectId.isValid(businessId)) {
-    return {
-      valid: false,
-      message: "Invalid business ID.",
-    };
-  }
-
-  const business = await Business.findOne({
-    _id: businessId,
-    isActive: true,
-  });
-
-  if (!business) {
-    return {
-      valid: false,
-      message: "Business not found or inactive.",
+      tenant,
+      scope,
     };
   }
 
   return {
-    valid: true,
-    business,
+    tenant,
+    scope: buildTenantBusinessQuery(tenant),
   };
 };
 
-// ==================================================
-// HELPER: GENERATE PAYMENT NUMBER
-// ==================================================
+const manualPaymentMethods = [
+  "cash",
+  "bank",
+  "card",
+  "cheque",
+  "credit",
+  "other",
+];
 
-const generatePaymentNumber = async (businessId) => {
-  const lastPayment = await SalePayment.findOne({
-    business: businessId,
-  })
-    .sort({ createdAt: -1 })
-    .select("paymentNumber");
+const generatePaymentNumber = async (
+  scope,
+  session
+) => {
+  const lastPayment =
+    await SalePayment.findOne(scope)
+      .sort({ createdAt: -1 })
+      .select("paymentNumber")
+      .session(session);
 
   if (!lastPayment) {
     return "PAY-000001";
   }
 
   const lastNumber = parseInt(
-    lastPayment.paymentNumber.replace("PAY-", ""),
+    lastPayment.paymentNumber.replace(
+      "PAY-",
+      ""
+    ),
     10
   );
 
-  const nextNumber = Number.isNaN(lastNumber)
-    ? 1
-    : lastNumber + 1;
+  const nextNumber =
+    Number.isNaN(lastNumber)
+      ? 1
+      : lastNumber + 1;
 
-  return `PAY-${String(nextNumber).padStart(6, "0")}`;
+  return `PAY-${String(nextNumber).padStart(
+    6,
+    "0"
+  )}`;
 };
-
-// ==================================================
-// HELPER: RECALCULATE SALE PAYMENT STATUS
-// ==================================================
 
 const recalculateSalePaymentStatus = async (
   saleId,
-  session = null
+  scope,
+  session
 ) => {
-  const paymentsQuery = SalePayment.find({
-    sale: saleId,
-    status: "completed",
-  }).select("amount");
-
-  if (session) {
-    paymentsQuery.session(session);
-  }
-
-  const payments = await paymentsQuery;
+  const payments =
+    await SalePayment.find({
+      sale: saleId,
+      ...scope,
+      status: "completed",
+    })
+      .select("amount")
+      .session(session);
 
   const paidAmount = payments.reduce(
-    (total, payment) => total + Number(payment.amount || 0),
+    (total, payment) =>
+      total + Number(payment.amount || 0),
     0
   );
 
-  const saleQuery = Sale.findById(saleId);
-
-  if (session) {
-    saleQuery.session(session);
-  }
-
-  const sale = await saleQuery;
+  const sale =
+    await Sale.findOne({
+      _id: saleId,
+      ...scope,
+    }).session(session);
 
   if (!sale) {
     throw new Error("Sale not found.");
   }
 
-  const totalAmount = Number(sale.totalAmount || 0);
+  const totalAmount =
+    Number(sale.totalAmount || 0);
 
   const dueAmount = Math.max(
     totalAmount - paidAmount,
     0
   );
 
-  let paymentStatus = "unpaid";
-
-  if (paidAmount <= 0) {
-    paymentStatus = "unpaid";
-  } else if (paidAmount < totalAmount) {
-    paymentStatus = "partially_paid";
-  } else {
-    paymentStatus = "paid";
-  }
-
   sale.paidAmount = paidAmount;
   sale.dueAmount = dueAmount;
-  sale.paymentStatus = paymentStatus;
+  sale.paymentStatus =
+    paidAmount <= 0
+      ? "unpaid"
+      : paidAmount < totalAmount
+        ? "partially_paid"
+        : "paid";
 
-  if (session) {
-    await sale.save({ session });
-  } else {
-    await sale.save();
-  }
+  await sale.save({ session });
 
   return {
     paidAmount,
     dueAmount,
-    paymentStatus,
+    paymentStatus:
+      sale.paymentStatus,
   };
 };
 
-// ==================================================
-// CREATE MANUAL SALE PAYMENT
-// ==================================================
+const getPayment = (id, scope) =>
+  SalePayment.findOne({
+    _id: id,
+    ...scope,
+  })
+    .populate(
+      "tenantOwner",
+      "name email"
+    )
+    .populate(
+      "business",
+      "name"
+    )
+    .populate(
+      "businessType",
+      "name"
+    )
+    .populate(
+      "sale",
+      "saleNumber totalAmount paidAmount dueAmount paymentStatus"
+    )
+    .populate(
+      "customer",
+      "name phone"
+    )
+    .populate(
+      "createdBy",
+      "name email"
+    )
+    .populate(
+      "updatedBy",
+      "name email"
+    );
 
-export const createSalePayment = async (req, res) => {
-  const session = await mongoose.startSession();
+// =====================================================
+// CREATE
+// =====================================================
+
+export const createSalePayment = async (
+  req,
+  res,
+  next
+) => {
+  const session =
+    await mongoose.startSession();
 
   try {
     session.startTransaction();
 
-    const businessId = getBusinessId(req);
+    const scopeData =
+      await getScope(req, true);
 
-    const businessCheck =
-      await validateBusiness(businessId);
-
-    if (!businessCheck.valid) {
+    if (!scopeData) {
       await session.abortTransaction();
 
       return errorResponse(
         res,
         400,
-        businessCheck.message
+        "tenantOwner, business and businessType are required."
       );
     }
+
+    const { scope } = scopeData;
 
     const {
       sale,
@@ -201,36 +270,25 @@ export const createSalePayment = async (req, res) => {
       notes = "",
     } = req.body;
 
-    // ------------------------------------------------
-    // ONLY MANUAL PAYMENT METHODS
-    // ------------------------------------------------
-
-    const manualPaymentMethods = [
-      "cash",
-      "bank",
-      "card",
-      "cheque",
-      "credit",
-      "other",
-    ];
-
-    if (!manualPaymentMethods.includes(paymentMethod)) {
+    if (
+      !manualPaymentMethods.includes(
+        paymentMethod
+      )
+    ) {
       await session.abortTransaction();
 
       return errorResponse(
         res,
         400,
-        "Online gateway payments must be created through the payment gateway endpoint."
+        "Online gateway payments must use the gateway payment flow."
       );
     }
 
-    // ------------------------------------------------
-    // VALIDATE AMOUNT
-    // ------------------------------------------------
+    const paymentAmount = Number(amount);
 
     if (
-      amount === undefined ||
-      Number(amount) <= 0
+      !Number.isFinite(paymentAmount) ||
+      paymentAmount <= 0
     ) {
       await session.abortTransaction();
 
@@ -241,14 +299,21 @@ export const createSalePayment = async (req, res) => {
       );
     }
 
-    // ------------------------------------------------
-    // VALIDATE SALE
-    // ------------------------------------------------
+    if (!isValidObjectId(sale)) {
+      await session.abortTransaction();
 
-    const saleRecord = await Sale.findOne({
-      _id: sale,
-      business: businessId,
-    }).session(session);
+      return errorResponse(
+        res,
+        400,
+        "Invalid sale ID."
+      );
+    }
+
+    const saleRecord =
+      await Sale.findOne({
+        _id: sale,
+        ...scope,
+      }).session(session);
 
     if (!saleRecord) {
       await session.abortTransaction();
@@ -260,35 +325,42 @@ export const createSalePayment = async (req, res) => {
       );
     }
 
-    // ------------------------------------------------
-    // SALE STATUS
-    // ------------------------------------------------
-
     if (
-      saleRecord.status === "cancelled" ||
-      saleRecord.status === "returned"
+      ["cancelled", "returned"].includes(
+        saleRecord.status
+      )
     ) {
       await session.abortTransaction();
 
       return errorResponse(
         res,
         400,
-        "Payment cannot be added to a cancelled or returned sale."
+        "Payment cannot be added to this sale."
       );
     }
 
-    // ------------------------------------------------
-    // VALIDATE CUSTOMER
-    // ------------------------------------------------
+    let customerId =
+      customer ||
+      saleRecord.customer ||
+      null;
 
-    let customerRecord = null;
+    if (customerId) {
+      if (!isValidObjectId(customerId)) {
+        await session.abortTransaction();
 
-    if (customer) {
-      customerRecord = await Customer.findOne({
-        _id: customer,
-        business: businessId,
-        isActive: true,
-      }).session(session);
+        return errorResponse(
+          res,
+          400,
+          "Invalid customer ID."
+        );
+      }
+
+      const customerRecord =
+        await Customer.findOne({
+          _id: customerId,
+          ...scope,
+          isActive: true,
+        }).session(session);
 
       if (!customerRecord) {
         await session.abortTransaction();
@@ -303,7 +375,7 @@ export const createSalePayment = async (req, res) => {
       if (
         saleRecord.customer &&
         saleRecord.customer.toString() !==
-          customer.toString()
+          customerId.toString()
       ) {
         await session.abortTransaction();
 
@@ -315,19 +387,16 @@ export const createSalePayment = async (req, res) => {
       }
     }
 
-    // ------------------------------------------------
-    // CALCULATE EXISTING PAID AMOUNT
-    // ------------------------------------------------
-
     const existingPayments =
       await SalePayment.find({
         sale: saleRecord._id,
+        ...scope,
         status: "completed",
       })
-        .session(session)
-        .select("amount");
+        .select("amount")
+        .session(session);
 
-    const existingPaidAmount =
+    const paidAmount =
       existingPayments.reduce(
         (total, payment) =>
           total + Number(payment.amount || 0),
@@ -336,15 +405,11 @@ export const createSalePayment = async (req, res) => {
 
     const remainingAmount = Math.max(
       Number(saleRecord.totalAmount || 0) -
-        existingPaidAmount,
+        paidAmount,
       0
     );
 
-    // ------------------------------------------------
-    // PREVENT OVERPAYMENT
-    // ------------------------------------------------
-
-    if (Number(amount) > remainingAmount) {
+    if (paymentAmount > remainingAmount) {
       await session.abortTransaction();
 
       return errorResponse(
@@ -354,30 +419,21 @@ export const createSalePayment = async (req, res) => {
       );
     }
 
-    // ------------------------------------------------
-    // GENERATE PAYMENT NUMBER
-    // ------------------------------------------------
+    const finalPaymentNumber =
+      paymentNumber?.trim().toUpperCase() ||
+      (await generatePaymentNumber(
+        scope,
+        session
+      ));
 
-    let finalPaymentNumber = paymentNumber;
-
-    if (!finalPaymentNumber) {
-      finalPaymentNumber =
-        await generatePaymentNumber(
-          businessId
-        );
-    }
-
-    // ------------------------------------------------
-    // CHECK DUPLICATE PAYMENT NUMBER
-    // ------------------------------------------------
-
-    const existingPaymentNumber =
+    const duplicate =
       await SalePayment.findOne({
-        business: businessId,
-        paymentNumber: finalPaymentNumber,
+        ...scope,
+        paymentNumber:
+          finalPaymentNumber,
       }).session(session);
 
-    if (existingPaymentNumber) {
+    if (duplicate) {
       await session.abortTransaction();
 
       return errorResponse(
@@ -387,146 +443,88 @@ export const createSalePayment = async (req, res) => {
       );
     }
 
-    // ------------------------------------------------
-    // CREATE MANUAL PAYMENT
-    // ------------------------------------------------
-
     const [newPayment] =
       await SalePayment.create(
         [
           {
-            business: businessId,
-
+            ...scope,
             sale: saleRecord._id,
-
-            customer:
-              customer ||
-              saleRecord.customer ||
-              null,
-
+            customer: customerId,
             paymentNumber:
               finalPaymentNumber,
-
-            amount: Number(amount),
-
+            amount: paymentAmount,
             currency:
               currency.toUpperCase(),
-
             paymentMethod,
-
-            // Manual payment
             gateway: null,
-
-            // Manual payment is considered
-            // completed when recorded by authorized user.
             status: "completed",
-
             paymentDate:
               paymentDate || new Date(),
-
             referenceNumber,
-
             transactionId: "",
-
             gatewayOrderId: "",
-
             gatewayPaymentId: "",
-
             gatewayStatus: "",
-
             gatewayResponse: null,
-
             notes,
-
             createdBy: req.user._id,
           },
         ],
         { session }
       );
 
-    // ------------------------------------------------
-    // RECALCULATE SALE
-    // ------------------------------------------------
-
     const paymentSummary =
       await recalculateSalePaymentStatus(
         saleRecord._id,
+        scope,
         session
       );
 
     await session.commitTransaction();
-
-    // ------------------------------------------------
-    // POPULATE RESPONSE
-    // ------------------------------------------------
-
-    const populatedPayment =
-      await SalePayment.findById(
-        newPayment._id
-      )
-        .populate(
-          "sale",
-          "saleNumber totalAmount paidAmount dueAmount paymentStatus"
-        )
-        .populate(
-          "customer",
-          "name phone"
-        )
-        .populate(
-          "createdBy",
-          "name email"
-        );
 
     return successResponse(
       res,
       201,
       "Sale payment created successfully.",
       {
-        payment: populatedPayment,
+        payment: await getPayment(
+          newPayment._id,
+          scope
+        ),
         salePaymentSummary:
           paymentSummary,
       }
     );
   } catch (error) {
     await session.abortTransaction();
-
-    console.error(
-      "Create Sale Payment Error:",
-      error
-    );
-
-    return errorResponse(
-      res,
-      500,
-      "Failed to create sale payment.",
-      error.message
-    );
+    next(error);
   } finally {
     await session.endSession();
   }
 };
 
-// ==================================================
-// GET ALL SALE PAYMENTS
-// ==================================================
+// =====================================================
+// GET ALL
+// =====================================================
 
 export const getAllSalePayments = async (
   req,
-  res
+  res,
+  next
 ) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData =
+      await getScope(req);
 
-    const businessCheck =
-      await validateBusiness(businessId);
-
-    if (!businessCheck.valid) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        businessCheck.message
+        "Invalid tenant filter."
       );
     }
+
+    const { scope } = scopeData;
 
     const {
       page = 1,
@@ -543,28 +541,40 @@ export const getAllSalePayments = async (
     } = req.query;
 
     const pageNumber = Math.max(
-      Number(page),
+      Number(page) || 1,
       1
     );
 
     const limitNumber = Math.min(
-      Math.max(Number(limit), 1),
+      Math.max(Number(limit) || 20, 1),
       100
     );
 
-    const skip =
-      (pageNumber - 1) *
-      limitNumber;
-
     const filter = {
-      business: businessId,
+      ...scope,
     };
 
     if (sale) {
+      if (!isValidObjectId(sale)) {
+        return errorResponse(
+          res,
+          400,
+          "Invalid sale ID."
+        );
+      }
+
       filter.sale = sale;
     }
 
     if (customer) {
+      if (!isValidObjectId(customer)) {
+        return errorResponse(
+          res,
+          400,
+          "Invalid customer ID."
+        );
+      }
+
       filter.customer = customer;
     }
 
@@ -587,34 +597,40 @@ export const getAllSalePayments = async (
     }
 
     if (search) {
+      const safeSearch =
+        search.replace(
+          /[.*+?^${}()|[\]\\]/g,
+          "\\$&"
+        );
+
       filter.$or = [
         {
           paymentNumber: {
-            $regex: search,
+            $regex: safeSearch,
             $options: "i",
           },
         },
         {
           referenceNumber: {
-            $regex: search,
+            $regex: safeSearch,
             $options: "i",
           },
         },
         {
           transactionId: {
-            $regex: search,
+            $regex: safeSearch,
             $options: "i",
           },
         },
         {
           gatewayOrderId: {
-            $regex: search,
+            $regex: safeSearch,
             $options: "i",
           },
         },
         {
           gatewayPaymentId: {
-            $regex: search,
+            $regex: safeSearch,
             $options: "i",
           },
         },
@@ -625,12 +641,31 @@ export const getAllSalePayments = async (
       filter.paymentDate = {};
 
       if (startDate) {
-        filter.paymentDate.$gte =
+        const start =
           new Date(startDate);
+
+        if (Number.isNaN(start.getTime())) {
+          return errorResponse(
+            res,
+            400,
+            "Invalid start date."
+          );
+        }
+
+        filter.paymentDate.$gte = start;
       }
 
       if (endDate) {
-        const end = new Date(endDate);
+        const end =
+          new Date(endDate);
+
+        if (Number.isNaN(end.getTime())) {
+          return errorResponse(
+            res,
+            400,
+            "Invalid end date."
+          );
+        }
 
         end.setHours(
           23,
@@ -643,9 +678,25 @@ export const getAllSalePayments = async (
       }
     }
 
+    const skip =
+      (pageNumber - 1) *
+      limitNumber;
+
     const [payments, total] =
       await Promise.all([
         SalePayment.find(filter)
+          .populate(
+            "tenantOwner",
+            "name email"
+          )
+          .populate(
+            "business",
+            "name"
+          )
+          .populate(
+            "businessType",
+            "name"
+          )
           .populate(
             "sale",
             "saleNumber totalAmount paidAmount dueAmount paymentStatus"
@@ -662,9 +713,7 @@ export const getAllSalePayments = async (
             "updatedBy",
             "name email"
           )
-          .sort({
-            createdAt: -1,
-          })
+          .sort({ createdAt: -1 })
           .skip(skip)
           .limit(limitNumber),
 
@@ -679,65 +728,43 @@ export const getAllSalePayments = async (
       "Sale payments fetched successfully.",
       {
         payments,
-
         pagination: {
           total,
           page: pageNumber,
           limit: limitNumber,
-          totalPages:
-            Math.ceil(
-              total /
-                limitNumber
-            ),
+          totalPages: Math.ceil(
+            total / limitNumber
+          ),
         },
       }
     );
   } catch (error) {
-    console.error(
-      "Get Sale Payments Error:",
-      error
-    );
-
-    return errorResponse(
-      res,
-      500,
-      "Failed to fetch sale payments.",
-      error.message
-    );
+    next(error);
   }
 };
 
-// ==================================================
-// GET SALE PAYMENTS BY SALE
-// ==================================================
+// =====================================================
+// GET BY SALE
+// =====================================================
 
 export const getSalePaymentsBySale =
-  async (req, res) => {
+  async (req, res, next) => {
     try {
-      const businessId =
-        getBusinessId(req);
+      const scopeData =
+        await getScope(req);
 
-      const { saleId } =
-        req.params;
-
-      const businessCheck =
-        await validateBusiness(
-          businessId
-        );
-
-      if (!businessCheck.valid) {
+      if (!scopeData) {
         return errorResponse(
           res,
           400,
-          businessCheck.message
+          "Invalid tenant filter."
         );
       }
 
-      if (
-        !mongoose.Types.ObjectId.isValid(
-          saleId
-        )
-      ) {
+      const { scope } = scopeData;
+      const { saleId } = req.params;
+
+      if (!isValidObjectId(saleId)) {
         return errorResponse(
           res,
           400,
@@ -748,7 +775,7 @@ export const getSalePaymentsBySale =
       const saleRecord =
         await Sale.findOne({
           _id: saleId,
-          business: businessId,
+          ...scope,
         });
 
       if (!saleRecord) {
@@ -761,8 +788,8 @@ export const getSalePaymentsBySale =
 
       const payments =
         await SalePayment.find({
-          business: businessId,
           sale: saleId,
+          ...scope,
         })
           .populate(
             "customer",
@@ -776,9 +803,7 @@ export const getSalePaymentsBySale =
             "updatedBy",
             "name email"
           )
-          .sort({
-            createdAt: -1,
-          });
+          .sort({ createdAt: -1 });
 
       return successResponse(
         res,
@@ -787,72 +812,47 @@ export const getSalePaymentsBySale =
         {
           sale: {
             _id: saleRecord._id,
-
             saleNumber:
               saleRecord.saleNumber,
-
             totalAmount:
               saleRecord.totalAmount,
-
             paidAmount:
               saleRecord.paidAmount,
-
             dueAmount:
               saleRecord.dueAmount,
-
             paymentStatus:
               saleRecord.paymentStatus,
           },
-
           payments,
         }
       );
     } catch (error) {
-      console.error(
-        "Get Sale Payments By Sale Error:",
-        error
-      );
-
-      return errorResponse(
-        res,
-        500,
-        "Failed to fetch sale payments.",
-        error.message
-      );
+      next(error);
     }
   };
 
-// ==================================================
-// GET SALE PAYMENT BY ID
-// ==================================================
+// =====================================================
+// GET BY ID
+// =====================================================
 
 export const getSalePaymentById =
-  async (req, res) => {
+  async (req, res, next) => {
     try {
-      const businessId =
-        getBusinessId(req);
+      const scopeData =
+        await getScope(req);
 
-      const { id } =
-        req.params;
-
-      const businessCheck =
-        await validateBusiness(
-          businessId
-        );
-
-      if (!businessCheck.valid) {
+      if (!scopeData) {
         return errorResponse(
           res,
           400,
-          businessCheck.message
+          "Invalid tenant filter."
         );
       }
 
-      if (
-        !mongoose.Types.ObjectId.isValid(
-          id
-        )
-      ) {
+      const { scope } = scopeData;
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
         return errorResponse(
           res,
           400,
@@ -861,26 +861,7 @@ export const getSalePaymentById =
       }
 
       const payment =
-        await SalePayment.findOne({
-          _id: id,
-          business: businessId,
-        })
-          .populate(
-            "sale",
-            "saleNumber totalAmount paidAmount dueAmount paymentStatus"
-          )
-          .populate(
-            "customer",
-            "name phone"
-          )
-          .populate(
-            "createdBy",
-            "name email"
-          )
-          .populate(
-            "updatedBy",
-            "name email"
-          );
+        await getPayment(id, scope);
 
       if (!payment) {
         return errorResponse(
@@ -897,58 +878,39 @@ export const getSalePaymentById =
         payment
       );
     } catch (error) {
-      console.error(
-        "Get Sale Payment Error:",
-        error
-      );
-
-      return errorResponse(
-        res,
-        500,
-        "Failed to fetch sale payment.",
-        error.message
-      );
+      next(error);
     }
   };
 
-// ==================================================
-// UPDATE MANUAL SALE PAYMENT
-// ==================================================
+// =====================================================
+// UPDATE
+// =====================================================
 
 export const updateSalePayment =
-  async (req, res) => {
+  async (req, res, next) => {
     const session =
       await mongoose.startSession();
 
     try {
       session.startTransaction();
 
-      const businessId =
-        getBusinessId(req);
+      const scopeData =
+        await getScope(req);
 
-      const { id } =
-        req.params;
-
-      const businessCheck =
-        await validateBusiness(
-          businessId
-        );
-
-      if (!businessCheck.valid) {
+      if (!scopeData) {
         await session.abortTransaction();
 
         return errorResponse(
           res,
           400,
-          businessCheck.message
+          "Invalid tenant filter."
         );
       }
 
-      if (
-        !mongoose.Types.ObjectId.isValid(
-          id
-        )
-      ) {
+      const { scope } = scopeData;
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
         await session.abortTransaction();
 
         return errorResponse(
@@ -961,7 +923,7 @@ export const updateSalePayment =
       const payment =
         await SalePayment.findOne({
           _id: id,
-          business: businessId,
+          ...scope,
         }).session(session);
 
       if (!payment) {
@@ -974,36 +936,20 @@ export const updateSalePayment =
         );
       }
 
-      // ------------------------------------------------
-      // ONLINE PAYMENTS ARE NOT EDITED HERE
-      // ------------------------------------------------
-
-      if (
-        payment.gateway === "paypal" ||
-        payment.gateway ===
-          "easypaisa" ||
-        payment.gateway ===
-          "jazzcash" ||
-        payment.gateway ===
-          "stripe"
-      ) {
+      if (payment.gateway) {
         await session.abortTransaction();
 
         return errorResponse(
           res,
           400,
-          "Gateway payments cannot be manually updated. Use the payment gateway flow."
+          "Gateway payments cannot be manually updated."
         );
       }
-
-      // ------------------------------------------------
-      // GET PARENT SALE
-      // ------------------------------------------------
 
       const saleRecord =
         await Sale.findOne({
           _id: payment.sale,
-          business: businessId,
+          ...scope,
         }).session(session);
 
       if (!saleRecord) {
@@ -1017,17 +963,16 @@ export const updateSalePayment =
       }
 
       if (
-        saleRecord.status ===
-          "cancelled" ||
-        saleRecord.status ===
-          "returned"
+        ["cancelled", "returned"].includes(
+          saleRecord.status
+        )
       ) {
         await session.abortTransaction();
 
         return errorResponse(
           res,
           400,
-          "Payment cannot be updated for a cancelled or returned sale."
+          "Payment cannot be updated for this sale."
         );
       }
 
@@ -1038,19 +983,6 @@ export const updateSalePayment =
         referenceNumber,
         notes,
       } = req.body;
-
-      // ------------------------------------------------
-      // MANUAL PAYMENT METHODS ONLY
-      // ------------------------------------------------
-
-      const manualPaymentMethods = [
-        "cash",
-        "bank",
-        "card",
-        "cheque",
-        "credit",
-        "other",
-      ];
 
       if (
         paymentMethod !== undefined &&
@@ -1063,47 +995,50 @@ export const updateSalePayment =
         return errorResponse(
           res,
           400,
-          "Gateway payment methods cannot be updated through this endpoint."
+          "Gateway payment methods cannot be used here."
         );
       }
 
-      // ------------------------------------------------
-      // PREVENT OVERPAYMENT
-      // ------------------------------------------------
+      if (amount !== undefined) {
+        const newAmount =
+          Number(amount);
 
-      if (
-        amount !== undefined &&
-        Number(amount) !==
-          Number(payment.amount)
-      ) {
+        if (
+          !Number.isFinite(newAmount) ||
+          newAmount <= 0
+        ) {
+          await session.abortTransaction();
+
+          return errorResponse(
+            res,
+            400,
+            "Payment amount must be greater than zero."
+          );
+        }
+
         const otherPayments =
           await SalePayment.find({
             sale: payment.sale,
-
-            _id: {
-              $ne: payment._id,
-            },
-
+            ...scope,
+            _id: { $ne: payment._id },
             status: "completed",
           })
-            .session(session)
-            .select("amount");
+            .select("amount")
+            .session(session);
 
         const otherPaidAmount =
           otherPayments.reduce(
             (total, item) =>
               total +
-              Number(
-                item.amount || 0
-              ),
+              Number(item.amount || 0),
             0
           );
 
         if (
           otherPaidAmount +
-            Number(amount) >
+            newAmount >
           Number(
-            saleRecord.totalAmount
+            saleRecord.totalAmount || 0
           )
         ) {
           await session.abortTransaction();
@@ -1114,40 +1049,17 @@ export const updateSalePayment =
             "Updated payment would exceed the sale total."
           );
         }
+
+        payment.amount =
+          newAmount;
       }
 
-      // ------------------------------------------------
-      // UPDATE MANUAL FIELDS
-      // ------------------------------------------------
-
-      if (
-        paymentDate !== undefined
-      ) {
+      if (paymentDate !== undefined) {
         payment.paymentDate =
           paymentDate;
       }
 
-      if (
-        amount !== undefined
-      ) {
-        if (Number(amount) <= 0) {
-          await session.abortTransaction();
-
-          return errorResponse(
-            res,
-            400,
-            "Payment amount must be greater than zero."
-          );
-        }
-
-        payment.amount =
-          Number(amount);
-      }
-
-      if (
-        paymentMethod !==
-        undefined
-      ) {
+      if (paymentMethod !== undefined) {
         payment.paymentMethod =
           paymentMethod;
       }
@@ -1160,9 +1072,7 @@ export const updateSalePayment =
           referenceNumber;
       }
 
-      if (
-        notes !== undefined
-      ) {
+      if (notes !== undefined) {
         payment.notes = notes;
       }
 
@@ -1173,89 +1083,65 @@ export const updateSalePayment =
         session,
       });
 
-      // ------------------------------------------------
-      // RECALCULATE SALE
-      // ------------------------------------------------
-
       const paymentSummary =
         await recalculateSalePaymentStatus(
           saleRecord._id,
+          scope,
           session
         );
 
       await session.commitTransaction();
-
-      const updatedPayment =
-        await SalePayment.findById(
-          payment._id
-        )
-          .populate(
-            "sale",
-            "saleNumber totalAmount paidAmount dueAmount paymentStatus"
-          )
-          .populate(
-            "customer",
-            "name phone"
-          )
-          .populate(
-            "updatedBy",
-            "name email"
-          );
 
       return successResponse(
         res,
         200,
         "Sale payment updated successfully.",
         {
-          payment:
-            updatedPayment,
-
+          payment: await getPayment(
+            payment._id,
+            scope
+          ),
           salePaymentSummary:
             paymentSummary,
         }
       );
     } catch (error) {
       await session.abortTransaction();
-
-      console.error(
-        "Update Sale Payment Error:",
-        error
-      );
-
-      return errorResponse(
-        res,
-        500,
-        "Failed to update sale payment.",
-        error.message
-      );
+      next(error);
     } finally {
       await session.endSession();
     }
   };
 
-// ==================================================
-// CANCEL SALE PAYMENT
-// ==================================================
+// =====================================================
+// CANCEL
+// =====================================================
 
 export const cancelSalePayment =
-  async (req, res) => {
+  async (req, res, next) => {
     const session =
       await mongoose.startSession();
 
     try {
       session.startTransaction();
 
-      const businessId =
-        getBusinessId(req);
+      const scopeData =
+        await getScope(req);
 
-      const { id } =
-        req.params;
+      if (!scopeData) {
+        await session.abortTransaction();
 
-      if (
-        !mongoose.Types.ObjectId.isValid(
-          id
-        )
-      ) {
+        return errorResponse(
+          res,
+          400,
+          "Invalid tenant filter."
+        );
+      }
+
+      const { scope } = scopeData;
+      const { id } = req.params;
+
+      if (!isValidObjectId(id)) {
         await session.abortTransaction();
 
         return errorResponse(
@@ -1268,7 +1154,7 @@ export const cancelSalePayment =
       const payment =
         await SalePayment.findOne({
           _id: id,
-          business: businessId,
+          ...scope,
         }).session(session);
 
       if (!payment) {
@@ -1281,24 +1167,17 @@ export const cancelSalePayment =
         );
       }
 
-      // ------------------------------------------------
-      // GATEWAY PAYMENTS
-      // ------------------------------------------------
-
       if (payment.gateway) {
         await session.abortTransaction();
 
         return errorResponse(
           res,
           400,
-          "Gateway payments cannot be cancelled through the manual SalePayment endpoint."
+          "Gateway payments cannot be cancelled through this endpoint."
         );
       }
 
-      if (
-        payment.status ===
-        "cancelled"
-      ) {
+      if (payment.status === "cancelled") {
         await session.abortTransaction();
 
         return errorResponse(
@@ -1308,9 +1187,23 @@ export const cancelSalePayment =
         );
       }
 
-      payment.status =
-        "cancelled";
+      const saleRecord =
+        await Sale.findOne({
+          _id: payment.sale,
+          ...scope,
+        }).session(session);
 
+      if (!saleRecord) {
+        await session.abortTransaction();
+
+        return errorResponse(
+          res,
+          404,
+          "Sale not found."
+        );
+      }
+
+      payment.status = "cancelled";
       payment.updatedBy =
         req.user._id;
 
@@ -1321,6 +1214,7 @@ export const cancelSalePayment =
       const paymentSummary =
         await recalculateSalePaymentStatus(
           payment.sale,
+          scope,
           session
         );
 
@@ -1338,26 +1232,15 @@ export const cancelSalePayment =
       );
     } catch (error) {
       await session.abortTransaction();
-
-      console.error(
-        "Cancel Sale Payment Error:",
-        error
-      );
-
-      return errorResponse(
-        res,
-        500,
-        "Failed to cancel sale payment.",
-        error.message
-      );
+      next(error);
     } finally {
       await session.endSession();
     }
   };
 
-// ==================================================
-// DELETE SALE PAYMENT
-// ==================================================
+// =====================================================
+// DELETE
+// =====================================================
 
 export const deleteSalePayment =
   async (req, res) => {

@@ -2,6 +2,23 @@ import mongoose from "mongoose";
 
 const saleItemSchema = new mongoose.Schema(
   {
+    // =====================================================
+    // TENANT / BUSINESS
+    // =====================================================
+
+    // Actual tenant owner.
+    // Admin = Admin user
+    // Manager = Admin owner through tenantContext
+    // Super Admin = null
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    // Business classification.
+    // NOT the primary tenant isolation field.
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
@@ -9,12 +26,29 @@ const saleItemSchema = new mongoose.Schema(
       index: true,
     },
 
+    // Business type classification.
+    // NOT the primary tenant isolation field.
+    businessType: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BusinessType",
+      required: true,
+      index: true,
+    },
+
+    // =====================================================
+    // SALE
+    // =====================================================
+
     sale: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Sale",
       required: true,
       index: true,
     },
+
+    // =====================================================
+    // PRODUCT
+    // =====================================================
 
     product: {
       type: mongoose.Schema.Types.ObjectId,
@@ -29,6 +63,10 @@ const saleItemSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+
+    // =====================================================
+    // ITEM DETAILS
+    // =====================================================
 
     quantity: {
       type: Number,
@@ -72,6 +110,10 @@ const saleItemSchema = new mongoose.Schema(
       default: 0,
     },
 
+    // =====================================================
+    // AUDIT
+    // =====================================================
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -89,6 +131,10 @@ const saleItemSchema = new mongoose.Schema(
   }
 );
 
+// =====================================================
+// UNIQUE SALE ITEM
+// =====================================================
+
 /*
  * Same inventory variant should not appear twice
  * inside the same sale.
@@ -103,20 +149,52 @@ saleItemSchema.index(
   }
 );
 
+// =====================================================
+// TENANT / SALE INDEX
+// =====================================================
+
 saleItemSchema.index({
+  tenantOwner: 1,
   business: 1,
+  businessType: 1,
   sale: 1,
 });
 
+// =====================================================
+// TENANT / PRODUCT INDEX
+// =====================================================
+
 saleItemSchema.index({
+  tenantOwner: 1,
   business: 1,
+  businessType: 1,
   product: 1,
 });
 
+// =====================================================
+// TENANT / INVENTORY INDEX
+// =====================================================
+
 saleItemSchema.index({
+  tenantOwner: 1,
   business: 1,
+  businessType: 1,
   productInventory: 1,
 });
+
+// =====================================================
+// TENANT / SALE + INVENTORY
+// =====================================================
+
+saleItemSchema.index({
+  tenantOwner: 1,
+  sale: 1,
+  productInventory: 1,
+});
+
+// =====================================================
+// MODEL
+// =====================================================
 
 const SaleItem = mongoose.model("SaleItem", saleItemSchema);
 

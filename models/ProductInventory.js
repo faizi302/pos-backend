@@ -2,11 +2,13 @@ import mongoose from "mongoose";
 
 const productInventorySchema = new mongoose.Schema(
   {
-    // ==========================================
-    // TENANT / BUSINESS
-    // ==========================================
-    // Every inventory belongs to exactly one business.
-    // This is the main tenant-isolation field.
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
@@ -14,15 +16,13 @@ const productInventorySchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // PRODUCT
-    // ==========================================
-    // Inventory must belong to a product.
-    //
-    // IMPORTANT:
-    // Controller must verify:
-    // product.business === inventory.business
-    //
+    businessType: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BusinessType",
+      required: true,
+      index: true,
+    },
+
     product: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Product",
@@ -30,17 +30,6 @@ const productInventorySchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // PRODUCT VARIANT
-    // ==========================================
-    // These fields are used when a product has variants.
-    //
-    // Example:
-    // Samsung S20
-    //   Black / 128GB
-    //   Black / 256GB
-    //   White / 128GB
-    //
     color: {
       type: String,
       trim: true,
@@ -53,9 +42,6 @@ const productInventorySchema = new mongoose.Schema(
       default: null,
     },
 
-    // ==========================================
-    // STOCK
-    // ==========================================
     quantity: {
       type: Number,
       min: 0,
@@ -74,9 +60,6 @@ const productInventorySchema = new mongoose.Schema(
       default: null,
     },
 
-    // ==========================================
-    // PRICING
-    // ==========================================
     purchasePrice: {
       type: Number,
       min: 0,
@@ -102,18 +85,12 @@ const productInventorySchema = new mongoose.Schema(
       default: 0,
     },
 
-    // ==========================================
-    // STATUS
-    // ==========================================
     isActive: {
       type: Boolean,
       default: true,
       index: true,
     },
 
-    // ==========================================
-    // AUDIT
-    // ==========================================
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -132,33 +109,9 @@ const productInventorySchema = new mongoose.Schema(
   }
 );
 
-// ======================================================
-// UNIQUE INVENTORY VARIANT PER BUSINESS + PRODUCT
-// ======================================================
-//
-// Business 1
-//   Samsung S20
-//      Black / 128GB
-//      Black / 256GB
-//
-// Business 2
-//   Samsung S20
-//      Black / 128GB
-//
-// This is completely valid because the businesses are
-// different tenants.
-//
-// But inside Business 1:
-//
-//   Samsung S20
-//      Black / 128GB
-//
-// cannot exist twice while active.
-//
-// ======================================================
 productInventorySchema.index(
   {
-    business: 1,
+    tenantOwner: 1,
     product: 1,
     color: 1,
     size: 1,
@@ -168,56 +121,60 @@ productInventorySchema.index(
     partialFilterExpression: {
       isActive: true,
     },
+    name: "tenantOwner_1_product_1_color_1_size_1",
   }
 );
 
-// ======================================================
-// BUSINESS + PRODUCT LOOKUP
-// ======================================================
-//
-// Used for queries such as:
-//
-// Get inventories belonging to my business
-// for a particular product.
-//
 productInventorySchema.index({
+  tenantOwner: 1,
+  product: 1,
+});
+
+productInventorySchema.index({
+  tenantOwner: 1,
   business: 1,
   product: 1,
 });
 
-// ======================================================
-// BUSINESS + CREATED BY
-// ======================================================
-//
-// Useful when you need to know which admin/manager
-// created inventory inside the business.
-//
 productInventorySchema.index({
+  tenantOwner: 1,
   business: 1,
+  businessType: 1,
+  product: 1,
+});
+
+productInventorySchema.index({
+  tenantOwner: 1,
+  businessType: 1,
+});
+
+productInventorySchema.index({
+  tenantOwner: 1,
   createdBy: 1,
 });
 
-// ======================================================
-// BUSINESS + STOCK LOOKUP
-// ======================================================
-
 productInventorySchema.index({
-  business: 1,
+  tenantOwner: 1,
   quantity: 1,
 });
 
-// ======================================================
-// BUSINESS + ACTIVE STATUS
-// ======================================================
+productInventorySchema.index({
+  tenantOwner: 1,
+  isActive: 1,
+});
 
 productInventorySchema.index({
+  tenantOwner: 1,
   business: 1,
   isActive: 1,
 });
 
-// ======================================================
-// MODEL
-// ======================================================
+productInventorySchema.index({
+  tenantOwner: 1,
+  business: 1,
+  businessType: 1,
+  isActive: 1,
+});
 
 const ProductInventory = mongoose.model(
   "ProductInventory",

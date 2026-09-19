@@ -3,9 +3,24 @@ import mongoose from "mongoose";
 const customerSchema = new mongoose.Schema(
     {
         // ================================================
-        // BUSINESS / TENANT
+        // TENANT / BUSINESS
         // ================================================
 
+        // The Admin account that owns this customer.
+        // This is the actual tenant isolation field.
+        //
+        // Admin A and Admin B can both have:
+        // IT + Mobiles + Ali
+        // but their tenantOwner will be different.
+        tenantOwner: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "User",
+            required: true,
+            index: true,
+        },
+
+        // Business classification
+        // This does NOT provide tenant isolation.
         business: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "Business",
@@ -139,18 +154,25 @@ const customerSchema = new mongoose.Schema(
 // INDEXES
 // ====================================================
 
-// Same customer name can exist in different
-// Business + BusinessType tenants.
+// Customer name is unique INSIDE the same tenant,
+// business and business type.
 //
-// Example:
-// Information Technology + Mobiles + Ali
-// Information Technology + Laptops + Ali
-// are both allowed.
+// Admin A:
+// tenantOwner = Admin A
+// business = IT
+// businessType = Mobiles
+// name = Ali
 //
-// But duplicate Ali inside the same tenant
-// is not allowed.
+// Admin B:
+// tenantOwner = Admin B
+// business = IT
+// businessType = Mobiles
+// name = Ali
+//
+// Both are allowed because tenantOwner is different.
 customerSchema.index(
     {
+        tenantOwner: 1,
         business: 1,
         businessType: 1,
         name: 1,
@@ -160,19 +182,25 @@ customerSchema.index(
     }
 );
 
+// Active customers inside a tenant
 customerSchema.index({
+    tenantOwner: 1,
     business: 1,
     businessType: 1,
     isActive: 1,
 });
 
+// Phone search inside a tenant
 customerSchema.index({
+    tenantOwner: 1,
     business: 1,
     businessType: 1,
     phone: 1,
 });
 
+// Email search inside a tenant
 customerSchema.index({
+    tenantOwner: 1,
     business: 1,
     businessType: 1,
     email: 1,

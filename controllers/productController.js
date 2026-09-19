@@ -1,5 +1,3 @@
-import mongoose from "mongoose";
-
 import Product from "../models/Product.js";
 import ProductInventory from "../models/ProductInventory.js";
 import Business from "../models/Business.js";
@@ -10,163 +8,305 @@ import Category from "../models/Category.js";
 import User from "../models/User.js";
 
 import {
-  uploadToCloudinary,
-  deleteFromCloudinary,
+    uploadToCloudinary,
+    deleteFromCloudinary,
 } from "../utils/cloudinaryUpload.js";
 
-// ======================================================
-// HELPER FUNCTIONS
-// ======================================================
+import {
+    successResponse,
+    errorResponse,
+} from "../utils/apiResponse.js";
 
-const getUserRole = (user) => {
-  return (
-    user?.role?.slug ||
-    user?.role?.name?.toLowerCase()
-  );
-};
-
-const isSuperAdmin = (user) => {
-  return getUserRole(user) === "super-admin";
-};
+import {
+    getTenantContext,
+    isValidObjectId,
+} from "../utils/tenantContext.js";
 
 // ======================================================
-// OBJECT ID VALIDATION
-// ======================================================
-
-const isValidObjectId = (value) => {
-  return (
-    value &&
-    mongoose.Types.ObjectId.isValid(value)
-  );
-};
-
-// ======================================================
-// PARSE BOOLEAN
-// ======================================================
-//
-// Correctly handles multipart/form-data:
-//
-// "true"  -> true
-// "false" -> false
-// true    -> true
-// false   -> false
-//
+// HELPERS
 // ======================================================
 
 const parseBoolean = (
-  value,
-  defaultValue = false
+    value,
+    defaultValue = false
 ) => {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
-    return defaultValue;
-  }
+    if (
+        value === undefined ||
+        value === null ||
+        value === ""
+    ) {
+        return defaultValue;
+    }
 
-  if (typeof value === "boolean") {
-    return value;
-  }
+    if (typeof value === "boolean") {
+        return value;
+    }
 
-  return (
-    String(value).toLowerCase() === "true"
-  );
+    return String(value).toLowerCase() === "true";
 };
-
-// ======================================================
-// PARSE NUMBER
-// ======================================================
 
 const parseNumber = (
-  value,
-  defaultValue = 0
+    value,
+    defaultValue = 0
 ) => {
-  if (
-    value === undefined ||
-    value === null ||
-    value === ""
-  ) {
-    return defaultValue;
-  }
+    if (
+        value === undefined ||
+        value === null ||
+        value === ""
+    ) {
+        return defaultValue;
+    }
 
-  const number = Number(value);
+    const number = Number(value);
 
-  return Number.isFinite(number)
-    ? number
-    : defaultValue;
+    return Number.isFinite(number)
+        ? number
+        : defaultValue;
+};
+
+const normalizeBarcode = (value) => {
+    if (
+        value === undefined ||
+        value === null
+    ) {
+        return null;
+    }
+
+    const barcode = String(value).trim();
+
+    return barcode || null;
+};
+
+const normalizeSku = (value) => {
+    if (
+        value === undefined ||
+        value === null
+    ) {
+        return "";
+    }
+
+    return String(value)
+        .trim()
+        .toUpperCase();
+};
+
+const makeSlug = (value = "") => {
+    return String(value)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "");
 };
 
 // ======================================================
-// GET EFFECTIVE BUSINESS CONTEXT
-// ======================================================
-//
-// Super Admin:
-//   No fixed business.
-//
-// Admin:
-//   business + businessType directly from User.
-//
-// Manager:
-//   business/businessType inherited from Admin
-//   through createdBy.
-//
+// PRODUCT POPULATE
 // ======================================================
 
-const getEffectiveBusinessContext = async (
-  user
+const populateProduct = (query) => {
+    return query
+        .populate({
+            path: "tenantOwner",
+            select: "name email",
+        })
+        .populate({
+            path: "business",
+            select: "name",
+        })
+        .populate({
+            path: "businessType",
+            select: "name",
+        })
+        .populate({
+            path: "category",
+            select: "name slug",
+        })
+        .populate({
+            path: "brand",
+            select: "name",
+        })
+        .populate({
+            path: "model",
+            select: "name",
+        })
+        .populate({
+            path: "createdBy",
+            select: "name email",
+        })
+        .populate({
+            path: "updatedBy",
+            select: "name email",
+        });
+};
+
+// ======================================================
+// RESOLVE TENANT
+// ======================================================
+//
+// ADMIN
+// → tenantOwner = Admin._id
+// → business = Admin.business
+// → businessType = Admin.businessType
+//
+// MANAGER
+// → tenantOwner = Manager's Admin ID
+// → business = Admin.business
+// → businessType = Admin.businessType
+//
+// SUPER ADMIN
+// → tenantOwner can be supplied to work with a
+//   specific Admin tenant.
+//
+// IMPORTANT:
+// For Admin/Manager, tenantOwner/business/businessType
+// NEVER come from req.body or req.query.
+// ======================================================
+
+const resolveTenant = async (
+    req,
+    requireOwner = true
 ) => {
-  if (!user) {
-    return null;
-  }
+    const context =
+        await getTenantContext(req);
 
-  // --------------------------------------------------
-  // ADMIN WITH DIRECT BUSINESS
-  // --------------------------------------------------
+    // --------------------------------------------------
+    // SUPER ADMIN
+    // --------------------------------------------------
 
-  if (user.business) {
-    return {
-      business:
-        user.business?._id ||
-        user.business,
+    if (context.isSuperAdmin) {
+        const requestedTenantOwner =
+            req.body?.tenantOwner ||
+            req.query?.tenantOwner;
 
-      businessType:
-        user.businessType?._id ||
-        user.businessType ||
-        null,
-    };
-  }
+        if (
+            requireOwner &&
+            !requestedTenantOwner
+        ) {
+            return {
+                error:
+                    "Tenant owner is required.",
+            };
+        }
 
-  // --------------------------------------------------
-  // MANAGER
-  // --------------------------------------------------
+        if (
+            requestedTenantOwner &&
+            !isValidObjectId(
+                requestedTenantOwner
+            )
+        ) {
+            return {
+                error:
+                    "Invalid tenant owner ID.",
+            };
+        }
 
-  if (user.createdBy) {
-    const creator =
-      await User.findById(
-        user.createdBy
-      ).select(
-        "business businessType"
-      );
+        // Super Admin without a selected tenant
+        if (!requestedTenantOwner) {
+            return {
+                context,
+                tenantOwner: null,
+                business:
+                    req.body?.business ||
+                    req.query?.business ||
+                    null,
+                businessType:
+                    req.body?.businessType ||
+                    req.query?.businessType ||
+                    null,
+            };
+        }
 
-    if (!creator) {
-      return null;
+        // ----------------------------------------------
+        // Validate selected Admin
+        // ----------------------------------------------
+
+        const admin =
+            await User.findById(
+                requestedTenantOwner
+            )
+                .select(
+                    "_id role business businessType status"
+                )
+                .populate({
+                    path: "role",
+                    select: "slug",
+                });
+
+        if (!admin) {
+            return {
+                error:
+                    "Tenant owner not found.",
+            };
+        }
+
+        const roleSlug =
+            admin.role?.slug?.toLowerCase();
+
+        if (roleSlug !== "admin") {
+            return {
+                error:
+                    "Tenant owner must be an Admin.",
+            };
+        }
+
+        if (admin.status !== "active") {
+            return {
+                error:
+                    "Tenant owner account is not active.",
+            };
+        }
+
+        if (!admin.business) {
+            return {
+                error:
+                    "Tenant owner is not assigned to a business.",
+            };
+        }
+
+        if (!admin.businessType) {
+            return {
+                error:
+                    "Tenant owner is not assigned to a business type.",
+            };
+        }
+
+        return {
+            context,
+            tenantOwner: admin._id,
+            business: admin.business,
+            businessType: admin.businessType,
+        };
+    }
+
+    // --------------------------------------------------
+    // ADMIN / MANAGER
+    // --------------------------------------------------
+
+    if (!context.tenantOwner) {
+        return {
+            error:
+                "Your account is not associated with a tenant.",
+        };
+    }
+
+    if (
+        !context.business ||
+        !context.businessType
+    ) {
+        return {
+            error:
+                "Your account is not associated with a business and business type.",
+        };
     }
 
     return {
-      business:
-        creator.business?._id ||
-        creator.business ||
-        null,
-
-      businessType:
-        creator.businessType?._id ||
-        creator.businessType ||
-        null,
+        context,
+        tenantOwner:
+            context.tenantOwner,
+        business:
+            context.business,
+        businessType:
+            context.businessType,
     };
-  }
-
-  return null;
 };
 
 // ======================================================
@@ -174,40 +314,20 @@ const getEffectiveBusinessContext = async (
 // ======================================================
 
 const validateBusiness = async (
-  businessId
+    businessId
 ) => {
-  if (!businessId) {
-    return {
-      valid: false,
-      message: "Business is required.",
-    };
-  }
+    if (
+        !isValidObjectId(
+            businessId
+        )
+    ) {
+        return null;
+    }
 
-  if (!isValidObjectId(businessId)) {
-    return {
-      valid: false,
-      message: "Invalid business ID.",
-    };
-  }
-
-  const business =
-    await Business.findOne({
-      _id: businessId,
-      isActive: true,
+    return Business.findOne({
+        _id: businessId,
+        isActive: true,
     });
-
-  if (!business) {
-    return {
-      valid: false,
-      message:
-        "Business not found or inactive.",
-    };
-  }
-
-  return {
-    valid: true,
-    business,
-  };
 };
 
 // ======================================================
@@ -215,406 +335,229 @@ const validateBusiness = async (
 // ======================================================
 
 const validateBusinessType = async (
-  businessTypeId,
-  businessId
+    businessTypeId,
+    businessId
 ) => {
-  if (!businessTypeId) {
-    return {
-      valid: false,
-      message:
-        "Business type is required.",
-    };
-  }
+    if (
+        !isValidObjectId(
+            businessTypeId
+        ) ||
+        !isValidObjectId(
+            businessId
+        )
+    ) {
+        return null;
+    }
 
-  if (
-    !isValidObjectId(
-      businessTypeId
-    )
-  ) {
-    return {
-      valid: false,
-      message:
-        "Invalid business type ID.",
-    };
-  }
-
-  const businessType =
-    await BusinessType.findOne({
-      _id: businessTypeId,
-      business: businessId,
-      isActive: true,
+    return BusinessType.findOne({
+        _id: businessTypeId,
+        business: businessId,
+        isActive: true,
     });
-
-  if (!businessType) {
-    return {
-      valid: false,
-      message:
-        "Business type not found or does not belong to this business.",
-    };
-  }
-
-  return {
-    valid: true,
-    businessType,
-  };
 };
 
 // ======================================================
 // VALIDATE CATEGORY
 // ======================================================
 //
-// Category belongs to Business.
+// Category is TENANT-OWNED.
 //
-// If category.businessType exists,
-// it must match selected BusinessType.
-//
-// If category.businessType is null,
-// it is treated as shared inside that Business.
+// Therefore:
+// tenantOwner + business + businessType
+// must match the current tenant.
 //
 // ======================================================
 
 const validateCategory = async (
-  categoryId,
-  businessId,
-  businessTypeId = null
+    categoryId,
+    tenantOwner,
+    businessId,
+    businessTypeId
 ) => {
-  if (!categoryId) {
-    return {
-      valid: false,
-      message: "Category is required.",
-    };
-  }
+    if (
+        !isValidObjectId(
+            categoryId
+        ) ||
+        !tenantOwner ||
+        !businessId ||
+        !businessTypeId
+    ) {
+        return null;
+    }
 
-  if (!isValidObjectId(categoryId)) {
-    return {
-      valid: false,
-      message: "Invalid category ID.",
-    };
-  }
+    return Category.findOne({
+        _id: categoryId,
+        tenantOwner,
+        business: businessId,
+        isActive: true,
 
-  const category =
-    await Category.findOne({
-      _id: categoryId,
-      business: businessId,
-      isActive: true,
+        $or: [
+            {
+                businessType:
+                    businessTypeId,
+            },
+            {
+                businessType: null,
+            },
+        ],
     });
-
-  if (!category) {
-    return {
-      valid: false,
-      message:
-        "Category not found or does not belong to this business.",
-    };
-  }
-
-  // --------------------------------------------------
-  // TYPE-SPECIFIC CATEGORY
-  // --------------------------------------------------
-
-  if (
-    category.businessType &&
-    businessTypeId &&
-    category.businessType.toString() !==
-      businessTypeId.toString()
-  ) {
-    return {
-      valid: false,
-      message:
-        "Category does not belong to the selected business type.",
-    };
-  }
-
-  return {
-    valid: true,
-    category,
-  };
 };
 
 // ======================================================
 // VALIDATE BRAND
 // ======================================================
 //
-// Brand must belong to:
+// IMPORTANT:
 //
-// Business
-// +
-// BusinessType
+// Brand is MASTER DATA created by Super Admin.
+//
+// Brand does NOT have tenantOwner.
+//
+// Therefore DO NOT use:
+//
+// tenantOwner: tenantOwner
+//
+// Instead validate:
+//
+// business + businessType
 //
 // ======================================================
 
 const validateBrand = async (
-  brandId,
-  businessId,
-  businessTypeId
+    brandId,
+    businessId,
+    businessTypeId
 ) => {
-  if (!brandId) {
-    return {
-      valid: false,
-      message: "Brand is required.",
-    };
-  }
+    if (
+        !isValidObjectId(
+            brandId
+        ) ||
+        !isValidObjectId(
+            businessId
+        ) ||
+        !isValidObjectId(
+            businessTypeId
+        )
+    ) {
+        return null;
+    }
 
-  if (!isValidObjectId(brandId)) {
-    return {
-      valid: false,
-      message: "Invalid brand ID.",
-    };
-  }
-
-  const brand =
-    await Brand.findOne({
-      _id: brandId,
-      business: businessId,
-      businessType: businessTypeId,
-      isActive: true,
+    return Brand.findOne({
+        _id: brandId,
+        business: businessId,
+        businessType: businessTypeId,
+        isActive: true,
     });
-
-  if (!brand) {
-    return {
-      valid: false,
-      message:
-        "Brand not found or does not belong to the selected business/business type.",
-    };
-  }
-
-  return {
-    valid: true,
-    brand,
-  };
 };
 
 // ======================================================
 // VALIDATE MODEL
 // ======================================================
 //
-// Model must belong to:
+// Model is MASTER DATA created by Super Admin.
 //
-// Business
-// +
-// BusinessType
-// +
-// Brand
+// Model does NOT use tenantOwner.
+//
+// It must belong to:
+// business
+// businessType
+// selected brand
 //
 // ======================================================
 
 const validateModel = async (
-  modelId,
-  brandId,
-  businessId,
-  businessTypeId
+    modelId,
+    businessId,
+    businessTypeId,
+    brandId
 ) => {
-  if (
-    modelId === undefined ||
-    modelId === null ||
-    modelId === ""
-  ) {
-    return {
-      valid: true,
-      model: null,
-    };
-  }
+    if (
+        !modelId
+    ) {
+        return null;
+    }
 
-  if (!isValidObjectId(modelId)) {
-    return {
-      valid: false,
-      message: "Invalid model ID.",
-    };
-  }
+    if (
+        !isValidObjectId(
+            modelId
+        )
+    ) {
+        return false;
+    }
 
-  const model =
-    await Model.findOne({
-      _id: modelId,
-      brand: brandId,
-      business: businessId,
-      businessType: businessTypeId,
-      isActive: true,
+    if (
+        !isValidObjectId(
+            businessId
+        ) ||
+        !isValidObjectId(
+            businessTypeId
+        ) ||
+        !isValidObjectId(
+            brandId
+        )
+    ) {
+        return null;
+    }
+
+    return Model.findOne({
+        _id: modelId,
+        business: businessId,
+        businessType: businessTypeId,
+        brand: brandId,
+        isActive: true,
     });
-
-  if (!model) {
-    return {
-      valid: false,
-      message:
-        "Model not found, inactive, or does not belong to the selected business, business type, and brand.",
-    };
-  }
-
-  return {
-    valid: true,
-    model,
-  };
 };
 
 // ======================================================
-// NORMALIZE BARCODE
+// DUPLICATE ERROR
 // ======================================================
 
-const normalizeBarcode = (
-  barcode
+const handleDuplicateError = (
+    error,
+    res
 ) => {
-  if (
-    barcode === undefined ||
-    barcode === null
-  ) {
-    return null;
-  }
+    if (
+        error?.code !== 11000
+    ) {
+        return false;
+    }
 
-  const value =
-    String(barcode).trim();
+    const keys =
+        Object.keys(
+            error.keyPattern || {}
+        );
 
-  return value || null;
-};
+    if (
+        keys.includes("sku")
+    ) {
+        errorResponse(
+            res,
+            409,
+            "A product with this SKU already exists in this tenant."
+        );
 
-// ======================================================
-// NORMALIZE BARCODE TYPE
-// ======================================================
-//
-// No barcode = CUSTOM
-//
-// ======================================================
+        return true;
+    }
 
-const normalizeBarcodeType = (
-  barcode,
-  barcodeType
-) => {
-  const normalizedBarcode =
-    normalizeBarcode(barcode);
+    if (
+        keys.includes("barcode")
+    ) {
+        errorResponse(
+            res,
+            409,
+            "A product with this barcode already exists in this tenant."
+        );
 
-  if (!normalizedBarcode) {
-    return "CUSTOM";
-  }
+        return true;
+    }
 
-  return barcodeType || "CUSTOM";
-};
-
-// ======================================================
-// VALIDATE PRODUCT TYPE / VARIANTS
-// ======================================================
-//
-// simple   -> hasVariants false
-// variable -> hasVariants true
-//
-// service/digital/bundle are allowed,
-// but variant handling follows hasVariants.
-//
-// ======================================================
-
-const validateProductTypeAndVariants = (
-  productType,
-  hasVariants
-) => {
-  if (
-    productType === "simple" &&
-    hasVariants === true
-  ) {
-    return {
-      valid: false,
-      message:
-        "A simple product cannot have variants. Use product type 'variable'.",
-    };
-  }
-
-  if (
-    productType === "variable" &&
-    hasVariants === false
-  ) {
-    return {
-      valid: false,
-      message:
-        "A variable product must have variants.",
-    };
-  }
-
-  return {
-    valid: true,
-  };
-};
-
-// ======================================================
-// DUPLICATE KEY ERROR
-// ======================================================
-
-const handleDuplicateKeyError = (
-  error,
-  res
-) => {
-  if (error?.code !== 11000) {
-    return false;
-  }
-
-  const keyPattern =
-    error.keyPattern || {};
-
-  if (
-    keyPattern.business &&
-    keyPattern.sku
-  ) {
-    res.status(409).json({
-      success: false,
-      message:
-        "A product with this SKU already exists in this business.",
-    });
-
-    return true;
-  }
-
-  if (
-    keyPattern.business &&
-    keyPattern.barcode
-  ) {
-    res.status(409).json({
-      success: false,
-      message:
-        "A product with this barcode already exists in this business.",
-    });
-
-    return true;
-  }
-
-  res.status(409).json({
-    success: false,
-    message:
-      "A product with the same unique value already exists in this business.",
-  });
-
-  return true;
-};
-
-// ======================================================
-// POPULATE PRODUCT
-// ======================================================
-
-const populateProduct = (
-  query
-) => {
-  return query
-    .populate(
-      "business",
-      "name"
-    )
-    .populate(
-      "businessType",
-      "name"
-    )
-    .populate(
-      "category",
-      "name slug"
-    )
-    .populate(
-      "brand",
-      "name"
-    )
-    .populate(
-      "model",
-      "name"
-    )
-    .populate(
-      "createdBy",
-      "name email"
-    )
-    .populate(
-      "updatedBy",
-      "name email"
+    errorResponse(
+        res,
+        409,
+        "A product with the same unique value already exists."
     );
+
+    return true;
 };
 
 // ======================================================
@@ -622,600 +565,570 @@ const populateProduct = (
 // ======================================================
 
 export const createProduct = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  const uploadedCloudinaryImages = [];
-
-  try {
-    const {
-      businessType,
-      category,
-      brand,
-      model,
-      name,
-      slug,
-      sku,
-      barcode,
-      barcodeType,
-      shortDescription,
-      description,
-      productType = "simple",
-      unit = "piece",
-      purchasePrice,
-      salePrice,
-      discount,
-      tax,
-      hasVariants,
-      isFeatured,
-      isActive,
-    } = req.body;
-
-    // ==================================================
-    // BUSINESS CONTEXT
-    // ==================================================
-
-    let businessId;
-    let effectiveBusinessType;
-
-    if (isSuperAdmin(req.user)) {
-      // ------------------------------------------------
-      // SUPER ADMIN
-      // ------------------------------------------------
-
-      businessId =
-        req.body.business ||
-        req.query.business ||
-        null;
-
-      effectiveBusinessType =
-        businessType || null;
-    } else {
-      // ------------------------------------------------
-      // ADMIN / MANAGER
-      // ------------------------------------------------
-      //
-      // NEVER trust business/businessType
-      // from frontend.
-      //
-      // Resolve from authenticated user.
-      //
-
-      const context =
-        await getEffectiveBusinessContext(
-          req.user
-        );
-
-      if (!context?.business) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business.",
-        });
-      }
-
-      if (!context?.businessType) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business type.",
-        });
-      }
-
-      businessId =
-        context.business;
-
-      effectiveBusinessType =
-        context.businessType;
-    }
-
-    // ==================================================
-    // BUSINESS
-    // ==================================================
-
-    const businessResult =
-      await validateBusiness(
-        businessId
-      );
-
-    if (!businessResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          businessResult.message,
-      });
-    }
-
-    // ==================================================
-    // BUSINESS TYPE
-    // ==================================================
-
-    const businessTypeResult =
-      await validateBusinessType(
-        effectiveBusinessType,
-        businessId
-      );
-
-    if (!businessTypeResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          businessTypeResult.message,
-      });
-    }
-
-    const validatedBusinessType =
-      businessTypeResult.businessType;
-
-    // ==================================================
-    // CATEGORY
-    // ==================================================
-
-    const categoryResult =
-      await validateCategory(
-        category,
-        businessId,
-        validatedBusinessType._id
-      );
-
-    if (!categoryResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          categoryResult.message,
-      });
-    }
-
-    // ==================================================
-    // BRAND
-    // ==================================================
-
-    const brandResult =
-      await validateBrand(
-        brand,
-        businessId,
-        validatedBusinessType._id
-      );
-
-    if (!brandResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          brandResult.message,
-      });
-    }
-
-    // ==================================================
-    // MODEL
-    // ==================================================
-
-    const modelResult =
-      await validateModel(
-        model,
-        brand,
-        businessId,
-        validatedBusinessType._id
-      );
-
-    if (!modelResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          modelResult.message,
-      });
-    }
-
-    // ==================================================
-    // PRODUCT TYPE
-    // ==================================================
-
-    const parsedHasVariants =
-      parseBoolean(
-        hasVariants,
-        productType === "variable"
-      );
-
-    const productTypeResult =
-      validateProductTypeAndVariants(
-        productType,
-        parsedHasVariants
-      );
-
-    if (!productTypeResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          productTypeResult.message,
-      });
-    }
-
-    // ==================================================
-    // PRODUCT NAME
-    // ==================================================
-
-    const productName =
-      name?.trim() ||
-      `${brandResult.brand.name}${
-        modelResult.model
-          ? ` ${modelResult.model.name}`
-          : ""
-      }`;
-
-    // ==================================================
-    // SKU
-    // ==================================================
-
-    const normalizedSku =
-      sku?.trim().toUpperCase();
-
-    if (!normalizedSku) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "SKU is required.",
-      });
-    }
-
-    const existingSku =
-      await Product.findOne({
-        business: businessId,
-        sku: normalizedSku,
-      }).select("_id");
-
-    if (existingSku) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "A product with this SKU already exists in this business.",
-      });
-    }
-
-    // ==================================================
-    // BARCODE
-    // ==================================================
-
-    const normalizedBarcode =
-      normalizeBarcode(
-        barcode
-      );
-
-    const normalizedBarcodeType =
-      normalizeBarcodeType(
-        normalizedBarcode,
-        barcodeType
-      );
-
-    // --------------------------------------------------
-    // OPTIONAL EARLY BARCODE CHECK
-    // --------------------------------------------------
-
-    if (normalizedBarcode) {
-      const existingBarcode =
-        await Product.findOne({
-          business: businessId,
-          barcode:
-            normalizedBarcode,
-        }).select("_id");
-
-      if (existingBarcode) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "A product with this barcode already exists in this business.",
-        });
-      }
-    }
-
-    // ==================================================
-    // BOOLEAN VALUES
-    // ==================================================
-
-    const parsedIsFeatured =
-      parseBoolean(
-        isFeatured,
-        false
-      );
-
-    const parsedIsActive =
-      parseBoolean(
-        isActive,
-        true
-      );
-
-    // ==================================================
-    // PRICE VALUES
-    // ==================================================
-
-    const parsedPurchasePrice =
-      parseNumber(
-        purchasePrice,
-        0
-      );
-
-    const parsedSalePrice =
-      parseNumber(
-        salePrice,
-        0
-      );
-
-    const parsedDiscount =
-      parseNumber(
-        discount,
-        0
-      );
-
-    const parsedTax =
-      parseNumber(
-        tax,
-        0
-      );
-
-    // ==================================================
-    // PRICE VALIDATION
-    // ==================================================
-
-    if (
-      parsedPurchasePrice < 0 ||
-      parsedSalePrice < 0
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Prices cannot be negative.",
-      });
-    }
-
-    if (
-      parsedDiscount < 0 ||
-      parsedDiscount > 100
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Discount must be between 0 and 100.",
-      });
-    }
-
-    if (parsedTax < 0) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Tax cannot be negative.",
-      });
-    }
-
-    // ==================================================
-    // UPLOAD IMAGES
-    // ==================================================
-
     const uploadedImages = [];
 
-    if (
-      req.files &&
-      req.files.length > 0
-    ) {
-      for (const file of req.files) {
-        const result =
-          await uploadToCloudinary(
-            file.buffer,
-            "pos/products"
-          );
+    try {
+        const tenant =
+            await resolveTenant(
+                req,
+                true
+            );
 
-        uploadedCloudinaryImages.push(
-          result.public_id
+        if (
+            tenant.error
+        ) {
+            return errorResponse(
+                res,
+                400,
+                tenant.error
+            );
+        }
+
+        const {
+            category,
+            brand,
+            model,
+            name,
+            slug,
+            sku,
+            barcode,
+            barcodeType,
+            shortDescription,
+            description,
+            productType = "simple",
+            unit = "piece",
+            purchasePrice,
+            salePrice,
+            discount,
+            tax,
+            hasVariants,
+            isFeatured,
+            isActive,
+        } = req.body;
+
+        const {
+            tenantOwner,
+            business,
+            businessType,
+        } = tenant;
+
+        // ==================================================
+        // BUSINESS
+        // ==================================================
+
+        const businessDoc =
+            await validateBusiness(
+                business
+            );
+
+        if (!businessDoc) {
+            return errorResponse(
+                res,
+                400,
+                "Business not found or inactive."
+            );
+        }
+
+        // ==================================================
+        // BUSINESS TYPE
+        // ==================================================
+
+        const businessTypeDoc =
+            await validateBusinessType(
+                businessType,
+                business
+            );
+
+        if (!businessTypeDoc) {
+            return errorResponse(
+                res,
+                400,
+                "Business type not found or does not belong to this business."
+            );
+        }
+
+        // ==================================================
+        // CATEGORY
+        // ==================================================
+
+        const categoryDoc =
+            await validateCategory(
+                category,
+                tenantOwner,
+                business,
+                businessType
+            );
+
+        if (!categoryDoc) {
+            return errorResponse(
+                res,
+                400,
+                "Category not found or does not belong to this tenant."
+            );
+        }
+
+        // ==================================================
+        // BRAND
+        // ==================================================
+        //
+        // Brand is Super Admin master data.
+        //
+        // NO tenantOwner check here.
+        //
+        // ==================================================
+
+        const brandDoc =
+            await validateBrand(
+                brand,
+                business,
+                businessType
+            );
+
+        if (!brandDoc) {
+            return errorResponse(
+                res,
+                400,
+                "Brand not found or does not belong to the selected business type."
+            );
+        }
+
+        // ==================================================
+        // MODEL
+        // ==================================================
+
+        const modelDoc =
+            await validateModel(
+                model,
+                business,
+                businessType,
+                brand
+            );
+
+        if (
+            model &&
+            modelDoc === false
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "Invalid model ID."
+            );
+        }
+
+        if (
+            model &&
+            !modelDoc
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "Model not found or does not belong to the selected brand and business type."
+            );
+        }
+
+        // ==================================================
+        // SKU
+        // ==================================================
+
+        const normalizedSku =
+            normalizeSku(sku);
+
+        if (!normalizedSku) {
+            return errorResponse(
+                res,
+                400,
+                "SKU is required."
+            );
+        }
+
+        const existingSku =
+            await Product.findOne({
+                tenantOwner,
+                sku: normalizedSku,
+            }).select("_id");
+
+        if (existingSku) {
+            return errorResponse(
+                res,
+                409,
+                "A product with this SKU already exists in this tenant."
+            );
+        }
+
+        // ==================================================
+        // BARCODE
+        // ==================================================
+
+        const normalizedBarcode =
+            normalizeBarcode(
+                barcode
+            );
+
+        if (
+            normalizedBarcode
+        ) {
+            const existingBarcode =
+                await Product.findOne({
+                    tenantOwner,
+                    barcode:
+                        normalizedBarcode,
+                }).select("_id");
+
+            if (existingBarcode) {
+                return errorResponse(
+                    res,
+                    409,
+                    "A product with this barcode already exists in this tenant."
+                );
+            }
+        }
+
+        // ==================================================
+        // PRODUCT TYPE
+        // ==================================================
+
+        const parsedHasVariants =
+            parseBoolean(
+                hasVariants,
+                productType ===
+                    "variable"
+            );
+
+        if (
+            productType ===
+                "simple" &&
+            parsedHasVariants
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "A simple product cannot have variants."
+            );
+        }
+
+        if (
+            productType ===
+                "variable" &&
+            !parsedHasVariants
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "A variable product must have variants."
+            );
+        }
+
+        // ==================================================
+        // PRICES
+        // ==================================================
+
+        const parsedPurchasePrice =
+            parseNumber(
+                purchasePrice,
+                0
+            );
+
+        const parsedSalePrice =
+            parseNumber(
+                salePrice,
+                0
+            );
+
+        const parsedDiscount =
+            parseNumber(
+                discount,
+                0
+            );
+
+        const parsedTax =
+            parseNumber(
+                tax,
+                0
+            );
+
+        if (
+            parsedPurchasePrice < 0 ||
+            parsedSalePrice < 0
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "Prices cannot be negative."
+            );
+        }
+
+        if (
+            parsedDiscount < 0 ||
+            parsedDiscount > 100
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "Discount must be between 0 and 100."
+            );
+        }
+
+        if (
+            parsedTax < 0
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "Tax cannot be negative."
+            );
+        }
+
+        // ==================================================
+        // PRODUCT NAME
+        // ==================================================
+
+        const productName =
+            name?.trim() ||
+            `${brandDoc.name}${
+                modelDoc
+                    ? ` ${modelDoc.name}`
+                    : ""
+            }`;
+
+        // ==================================================
+        // SLUG
+        // ==================================================
+
+        const productSlug =
+            slug?.trim()
+                ? slug
+                      .trim()
+                      .toLowerCase()
+                : makeSlug(
+                      productName
+                  );
+
+        // ==================================================
+        // IMAGES
+        // ==================================================
+
+        if (
+            req.files?.length
+        ) {
+            for (
+                const file of req.files
+            ) {
+                const result =
+                    await uploadToCloudinary(
+                        file.buffer,
+                        "pos/products"
+                    );
+
+                uploadedImages.push({
+                    url:
+                        result.secure_url,
+
+                    publicId:
+                        result.public_id,
+
+                    assetId:
+                        result.asset_id ||
+                        null,
+                });
+            }
+        }
+
+        // ==================================================
+        // CREATE PRODUCT
+        // ==================================================
+        //
+        // IMPORTANT:
+        //
+        // tenantOwner/business/businessType come from
+        // authenticated tenant context.
+        //
+        // They are NOT trusted from req.body.
+        //
+        // ==================================================
+
+        const product =
+            await Product.create({
+                tenantOwner,
+
+                business,
+
+                businessType,
+
+                category:
+                    categoryDoc._id,
+
+                brand:
+                    brandDoc._id,
+
+                model:
+                    modelDoc?._id ||
+                    null,
+
+                name:
+                    productName,
+
+                slug:
+                    productSlug,
+
+                sku:
+                    normalizedSku,
+
+                barcode:
+                    normalizedBarcode,
+
+                barcodeType:
+                    normalizedBarcode
+                        ? barcodeType ||
+                          "CUSTOM"
+                        : "CUSTOM",
+
+                shortDescription:
+                    shortDescription?.trim() ||
+                    "",
+
+                description:
+                    description?.trim() ||
+                    "",
+
+                images:
+                    uploadedImages,
+
+                productType,
+
+                hasVariants:
+                    parsedHasVariants,
+
+                unit,
+
+                purchasePrice:
+                    parsedPurchasePrice,
+
+                salePrice:
+                    parsedSalePrice,
+
+                discount:
+                    parsedDiscount,
+
+                tax:
+                    parsedTax,
+
+                isFeatured:
+                    parseBoolean(
+                        isFeatured,
+                        false
+                    ),
+
+                isActive:
+                    parseBoolean(
+                        isActive,
+                        true
+                    ),
+
+                createdBy:
+                    req.user._id,
+            });
+
+        // ==================================================
+        // DEFAULT INVENTORY
+        // ==================================================
+
+        if (
+            !parsedHasVariants
+        ) {
+            await ProductInventory.create({
+                business,
+
+                product:
+                    product._id,
+
+                color: null,
+                size: null,
+
+                quantity: 0,
+                minStock: 0,
+                maxStock: null,
+
+                purchasePrice:
+                    parsedPurchasePrice,
+
+                salePrice:
+                    parsedSalePrice,
+
+                discount:
+                    parsedDiscount,
+
+                tax:
+                    parsedTax,
+
+                isActive: true,
+
+                createdBy:
+                    req.user._id,
+            });
+        }
+
+        // ==================================================
+        // POPULATE
+        // ==================================================
+
+        const populated =
+            await populateProduct(
+                Product.findById(
+                    product._id
+                )
+            );
+
+        return successResponse(
+            res,
+            201,
+            "Product created successfully.",
+            populated
+        );
+    } catch (error) {
+        console.error(
+            "Create Product Error:",
+            error
         );
 
-        uploadedImages.push({
-          url: result.secure_url,
-          publicId:
-            result.public_id,
-          assetId:
-            result.asset_id || null,
-        });
-      }
-    }
+        // ==================================================
+        // CLOUDINARY CLEANUP
+        // ==================================================
 
-    // ==================================================
-    // CREATE PRODUCT
-    // ==================================================
+        for (
+            const image of uploadedImages
+        ) {
+            if (
+                !image?.publicId
+            ) {
+                continue;
+            }
 
-    const product =
-      await Product.create({
-        business:
-          businessId,
-
-        businessType:
-          validatedBusinessType._id,
-
-        category:
-          categoryResult.category._id,
-
-        brand:
-          brandResult.brand._id,
-
-        model:
-          modelResult.model?._id ||
-          null,
-
-        name:
-          productName,
-
-        slug:
-          slug?.trim()
-            ? slug
-                .trim()
-                .toLowerCase()
-            : productName
-                .trim()
-                .toLowerCase()
-                .replace(
-                  /[^a-z0-9]+/g,
-                  "-"
-                )
-                .replace(
-                  /^-+|-+$/g,
-                  ""
-                ),
-
-        sku:
-          normalizedSku,
-
-        barcode:
-          normalizedBarcode,
-
-        barcodeType:
-          normalizedBarcodeType,
-
-        shortDescription:
-          shortDescription?.trim() ||
-          "",
-
-        description:
-          description?.trim() ||
-          "",
-
-        images:
-          uploadedImages,
-
-        productType:
-          productType,
-
-        unit:
-          unit || "piece",
-
-        purchasePrice:
-          parsedPurchasePrice,
-
-        salePrice:
-          parsedSalePrice,
-
-        discount:
-          parsedDiscount,
-
-        tax:
-          parsedTax,
-
-        hasVariants:
-          parsedHasVariants,
-
-        isFeatured:
-          parsedIsFeatured,
-
-        isActive:
-          parsedIsActive,
-
-        createdBy:
-          req.user._id,
-      });
-
-    // ==================================================
-    // CREATE DEFAULT INVENTORY
-    // ==================================================
-    //
-    // Only non-variant products get the default
-    // inventory record.
-    //
-    // ==================================================
-
-    if (!parsedHasVariants) {
-      await ProductInventory.create({
-        business:
-          businessId,
-
-        product:
-          product._id,
-
-        color: null,
-        size: null,
-
-        quantity: 0,
-        minStock: 0,
-        maxStock: null,
-
-        purchasePrice:
-          parsedPurchasePrice,
-
-        salePrice:
-          parsedSalePrice,
-
-        discount:
-          parsedDiscount,
-
-        tax:
-          parsedTax,
-
-        isActive: true,
-
-        createdBy:
-          req.user._id,
-      });
-    }
-
-    // ==================================================
-    // POPULATE PRODUCT
-    // ==================================================
-
-    const populatedProduct =
-      await populateProduct(
-        Product.findById(
-          product._id
-        )
-      );
-
-    return res.status(201).json({
-      success: true,
-      message:
-        "Product created successfully.",
-      data:
-        populatedProduct,
-    });
-  } catch (error) {
-    console.error(
-      "Create Product Error:",
-      error
-    );
-
-    // --------------------------------------------------
-    // CLEAN UP CLOUDINARY IMAGES IF DB CREATE FAILED
-    // --------------------------------------------------
-
-    if (
-      uploadedCloudinaryImages.length
-    ) {
-      for (const publicId of uploadedCloudinaryImages) {
-        try {
-          await deleteFromCloudinary(
-            publicId
-          );
-        } catch (cloudinaryError) {
-          console.error(
-            "Cloudinary cleanup error:",
-            cloudinaryError
-          );
+            try {
+                await deleteFromCloudinary(
+                    image.publicId
+                );
+            } catch {}
         }
-      }
+
+        if (
+            handleDuplicateError(
+                error,
+                res
+            )
+        ) {
+            return;
+        }
+
+        return errorResponse(
+            res,
+            500,
+            error.message ||
+                "Failed to create product."
+        );
     }
-
-    // --------------------------------------------------
-    // DUPLICATE KEY
-    // --------------------------------------------------
-
-    if (
-      handleDuplicateKeyError(
-        error,
-        res
-      )
-    ) {
-      return;
-    }
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to create product.",
-    });
-  }
 };
 
 // ======================================================
@@ -1223,471 +1136,423 @@ export const createProduct = async (
 // ======================================================
 
 export const getAllProducts = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  try {
-    const {
-      page = 1,
-      limit = 20,
-      search,
-      category,
-      brand,
-      model,
-      productType,
-      isActive,
-      stockStatus,
-      business,
-      businessType,
-    } = req.query;
-
-    const query = {};
-
-    // ==================================================
-    // TENANT SECURITY
-    // ==================================================
-
-    if (isSuperAdmin(req.user)) {
-      // ------------------------------------------------
-      // SUPER ADMIN
-      // ------------------------------------------------
-
-      if (business) {
-        if (
-          !isValidObjectId(
-            business
-          )
-        ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business ID.",
-          });
-        }
-
-        query.business =
-          business;
-      }
-
-      if (businessType) {
-        if (
-          !isValidObjectId(
-            businessType
-          )
-        ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business type ID.",
-          });
-        }
-
-        query.businessType =
-          businessType;
-      }
-    } else {
-      // ------------------------------------------------
-      // ADMIN / MANAGER
-      // ------------------------------------------------
-
-      const context =
-        await getEffectiveBusinessContext(
-          req.user
-        );
-
-      if (!context?.business) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business.",
-        });
-      }
-
-      if (!context?.businessType) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business type.",
-        });
-      }
-
-      // IMPORTANT:
-      // Never allow frontend to override these.
-
-      query.business =
-        context.business;
-
-      query.businessType =
-        context.businessType;
-    }
-
-    // ==================================================
-    // SEARCH
-    // ==================================================
-
-    if (search?.trim()) {
-      const searchValue =
-        search.trim();
-
-      query.$or = [
-        {
-          name: {
-            $regex:
-              searchValue,
-            $options: "i",
-          },
-        },
-        {
-          sku: {
-            $regex:
-              searchValue,
-            $options: "i",
-          },
-        },
-        {
-          barcode: {
-            $regex:
-              searchValue,
-            $options: "i",
-          },
-        },
-      ];
-    }
-
-    // ==================================================
-    // FILTERS
-    // ==================================================
-
-    if (category) {
-      if (
-        !isValidObjectId(
-          category
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid category ID.",
-        });
-      }
-
-      query.category =
-        category;
-    }
-
-    if (brand) {
-      if (
-        !isValidObjectId(
-          brand
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid brand ID.",
-        });
-      }
-
-      query.brand =
-        brand;
-    }
-
-    if (model) {
-      if (
-        !isValidObjectId(
-          model
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid model ID.",
-        });
-      }
-
-      query.model =
-        model;
-    }
-
-    if (productType) {
-      query.productType =
-        productType;
-    }
-
-    if (isActive !== undefined) {
-      query.isActive =
-        parseBoolean(
-          isActive
-        );
-    }
-
-    // ==================================================
-    // PAGINATION
-    // ==================================================
-
-    const pageNumber =
-      Math.max(
-        Number(page) || 1,
-        1
-      );
-
-    const limitNumber =
-      Math.min(
-        Math.max(
-          Number(limit) || 20,
-          1
-        ),
-        100
-      );
-
-    const skip =
-      (pageNumber - 1) *
-      limitNumber;
-
-    // ==================================================
-    // PRODUCTS
-    // ==================================================
-
-    const [products, total] =
-      await Promise.all([
-        populateProduct(
-          Product.find(query)
-            .sort({
-              createdAt: -1,
-            })
-            .skip(skip)
-            .limit(
-              limitNumber
-            )
-        ),
-
-        Product.countDocuments(
-          query
-        ),
-      ]);
-
-    // ==================================================
-    // STOCK STATUS
-    // ==================================================
-    //
-    // This preserves your existing stock filtering
-    // functionality.
-    //
-    // ==================================================
-
-    let filteredProducts =
-      products;
-
-    if (stockStatus) {
-      const validStockStatuses = [
-        "out-of-stock",
-        "low-stock",
-        "in-stock",
-      ];
-
-      if (
-        !validStockStatuses.includes(
-          stockStatus
-        )
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Invalid stock status.",
-        });
-      }
-
-      const productIds =
-        products.map(
-          (product) =>
-            product._id
-        );
-
-      const inventoryQuery = {
-        product: {
-          $in: productIds,
-        },
-
-        isActive: true,
-      };
-
-      // ------------------------------------------------
-      // INVENTORY TENANT SECURITY
-      // ------------------------------------------------
-
-      if (isSuperAdmin(req.user)) {
-        if (business) {
-          inventoryQuery.business =
-            business;
-        }
-      } else {
-        const context =
-          await getEffectiveBusinessContext(
-            req.user
-          );
-
-        if (!context?.business) {
-          return res.status(403).json({
-            success: false,
-            message:
-              "Your account is not associated with a business.",
-          });
-        }
-
-        inventoryQuery.business =
-          context.business;
-      }
-
-      const inventories =
-        await ProductInventory.find(
-          inventoryQuery
-        );
-
-      const inventoryMap =
-        new Map();
-
-      inventories.forEach(
-        (inventory) => {
-          const productId =
-            inventory.product.toString();
-
-          if (
-            !inventoryMap.has(
-              productId
-            )
-          ) {
-            inventoryMap.set(
-              productId,
-              []
+    try {
+        const tenant =
+            await resolveTenant(
+                req,
+                false
             );
-          }
 
-          inventoryMap
-            .get(productId)
-            .push(inventory);
+        if (
+            tenant.error
+        ) {
+            return errorResponse(
+                res,
+                400,
+                tenant.error
+            );
         }
-      );
 
-      filteredProducts =
-        products.filter(
-          (product) => {
-            const productInventory =
-              inventoryMap.get(
-                product._id.toString()
-              ) || [];
+        const {
+            tenantOwner,
+            business,
+            businessType,
+            context,
+        } = tenant;
 
-            const quantity =
-              productInventory.reduce(
-                (
-                  totalQuantity,
-                  item
-                ) =>
-                  totalQuantity +
-                  Number(
-                    item.quantity ||
-                      0
-                  ),
-                0
-              );
+        const {
+            page = 1,
+            limit = 20,
+            search,
+            category,
+            brand,
+            model,
+            productType,
+            isActive,
+            stockStatus,
+        } = req.query;
 
-            const minStock =
-              productInventory.length
-                ? Math.min(
-                    ...productInventory.map(
-                      (item) =>
-                        Number(
-                          item.minStock ||
-                            0
-                        )
+        const query = {};
+
+        // ==================================================
+        // TENANT ISOLATION
+        // ==================================================
+
+        if (
+            !context.isSuperAdmin
+        ) {
+            query.tenantOwner =
+                tenantOwner;
+
+            // ----------------------------------------------
+            // For Admin/Manager, business context also comes
+            // from authenticated user.
+            // ----------------------------------------------
+
+            query.business =
+                business;
+
+            query.businessType =
+                businessType;
+        } else if (
+            tenantOwner
+        ) {
+            query.tenantOwner =
+                tenantOwner;
+
+            // ----------------------------------------------
+            // Super Admin can inspect selected tenant.
+            // ----------------------------------------------
+
+            if (
+                business
+            ) {
+                query.business =
+                    business;
+            }
+
+            if (
+                businessType
+            ) {
+                query.businessType =
+                    businessType;
+            }
+        }
+
+        // ==================================================
+        // SEARCH
+        // ==================================================
+
+        if (
+            search?.trim()
+        ) {
+            const value =
+                search.trim();
+
+            query.$or = [
+                {
+                    name: {
+                        $regex:
+                            value,
+                        $options:
+                            "i",
+                    },
+                },
+                {
+                    sku: {
+                        $regex:
+                            value,
+                        $options:
+                            "i",
+                    },
+                },
+                {
+                    barcode: {
+                        $regex:
+                            value,
+                        $options:
+                            "i",
+                    },
+                },
+            ];
+        }
+
+        // ==================================================
+        // CATEGORY / BRAND / MODEL FILTERS
+        // ==================================================
+
+        for (
+            const [
+                field,
+                value,
+            ] of [
+                ["category", category],
+                ["brand", brand],
+                ["model", model],
+            ]
+        ) {
+            if (
+                value
+            ) {
+                if (
+                    !isValidObjectId(
+                        value
                     )
-                  )
-                : 0;
+                ) {
+                    return errorResponse(
+                        res,
+                        400,
+                        `Invalid ${field} ID.`
+                    );
+                }
 
-            // ------------------------------------------
-            // OUT OF STOCK
-            // ------------------------------------------
+                query[field] =
+                    value;
+            }
+        }
 
+        // ==================================================
+        // PRODUCT TYPE
+        // ==================================================
+
+        if (
+            productType
+        ) {
+            query.productType =
+                productType;
+        }
+
+        // ==================================================
+        // ACTIVE STATUS
+        // ==================================================
+
+        if (
+            isActive !==
+            undefined
+        ) {
+            query.isActive =
+                parseBoolean(
+                    isActive
+                );
+        }
+
+        // ==================================================
+        // PAGINATION
+        // ==================================================
+
+        const pageNumber =
+            Math.max(
+                Number(page) || 1,
+                1
+            );
+
+        const limitNumber =
+            Math.min(
+                Math.max(
+                    Number(limit) ||
+                        20,
+                    1
+                ),
+                100
+            );
+
+        const skip =
+            (pageNumber - 1) *
+            limitNumber;
+
+        const [
+            products,
+            total,
+        ] = await Promise.all([
+            populateProduct(
+                Product.find(
+                    query
+                )
+                    .sort({
+                        createdAt:
+                            -1,
+                    })
+                    .skip(skip)
+                    .limit(
+                        limitNumber
+                    )
+            ),
+
+            Product.countDocuments(
+                query
+            ),
+        ]);
+
+        // ==================================================
+        // STOCK FILTER
+        // ==================================================
+
+        let result =
+            products;
+
+        if (
+            stockStatus
+        ) {
             if (
-              stockStatus ===
-              "out-of-stock"
+                ![
+                    "out-of-stock",
+                    "low-stock",
+                    "in-stock",
+                ].includes(
+                    stockStatus
+                )
             ) {
-              return (
-                quantity === 0
-              );
+                return errorResponse(
+                    res,
+                    400,
+                    "Invalid stock status."
+                );
             }
 
-            // ------------------------------------------
-            // LOW STOCK
-            // ------------------------------------------
+            const productIds =
+                products.map(
+                    (item) =>
+                        item._id
+                );
 
+            const inventoryQuery = {
+                product: {
+                    $in:
+                        productIds,
+                },
+                isActive: true,
+            };
+
+            // ProductInventory currently uses business
+            // as its available tenant context.
             if (
-              stockStatus ===
-              "low-stock"
+                business
             ) {
-              return (
-                quantity > 0 &&
-                quantity <=
-                  minStock
-              );
+                inventoryQuery.business =
+                    business;
             }
 
-            // ------------------------------------------
-            // IN STOCK
-            // ------------------------------------------
+            const inventories =
+                await ProductInventory.find(
+                    inventoryQuery
+                );
 
-            if (
-              stockStatus ===
-              "in-stock"
+            const inventoryMap =
+                new Map();
+
+            for (
+                const inventory of inventories
             ) {
-              return (
-                quantity > 0
-              );
+                const id =
+                    inventory.product.toString();
+
+                if (
+                    !inventoryMap.has(
+                        id
+                    )
+                ) {
+                    inventoryMap.set(
+                        id,
+                        []
+                    );
+                }
+
+                inventoryMap
+                    .get(id)
+                    .push(
+                        inventory
+                    );
             }
 
-            return true;
-          }
+            result =
+                products.filter(
+                    (
+                        product
+                    ) => {
+                        const items =
+                            inventoryMap.get(
+                                product._id.toString()
+                            ) || [];
+
+                        const quantity =
+                            items.reduce(
+                                (
+                                    total,
+                                    item
+                                ) =>
+                                    total +
+                                    Number(
+                                        item.quantity ||
+                                            0
+                                    ),
+                                0
+                            );
+
+                        const minStock =
+                            items.length
+                                ? Math.min(
+                                      ...items.map(
+                                          (
+                                              item
+                                          ) =>
+                                              Number(
+                                                  item.minStock ||
+                                                      0
+                                              )
+                                      )
+                                  )
+                                : 0;
+
+                        if (
+                            stockStatus ===
+                            "out-of-stock"
+                        ) {
+                            return (
+                                quantity ===
+                                0
+                            );
+                        }
+
+                        if (
+                            stockStatus ===
+                            "low-stock"
+                        ) {
+                            return (
+                                quantity >
+                                    0 &&
+                                quantity <=
+                                    minStock
+                            );
+                        }
+
+                        return (
+                            quantity > 0
+                        );
+                    }
+                );
+        }
+
+        return successResponse(
+            res,
+            200,
+            "Products fetched successfully.",
+            {
+                products:
+                    result,
+
+                pagination: {
+                    page:
+                        pageNumber,
+
+                    limit:
+                        limitNumber,
+
+                    total,
+
+                    totalPages:
+                        Math.ceil(
+                            total /
+                                limitNumber
+                        ),
+                },
+            }
+        );
+    } catch (error) {
+        console.error(
+            "Get Products Error:",
+            error
+        );
+
+        return errorResponse(
+            res,
+            500,
+            error.message ||
+                "Failed to fetch products."
         );
     }
-
-    return res.status(200).json({
-      success: true,
-      message:
-        "Products fetched successfully.",
-      data: {
-        products:
-          filteredProducts,
-
-        pagination: {
-          page:
-            pageNumber,
-
-          limit:
-            limitNumber,
-
-          // Preserves existing API behavior.
-          total,
-
-          totalPages:
-            Math.ceil(
-              total /
-                limitNumber
-            ),
-        },
-      },
-    });
-  } catch (error) {
-    console.error(
-      "Get Products Error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to fetch products.",
-    });
-  }
 };
 
 // ======================================================
@@ -1695,158 +1560,129 @@ export const getAllProducts = async (
 // ======================================================
 
 export const getProductById = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  try {
-    const productId =
-      req.params.id;
+    try {
+        const id =
+            req.params.id;
 
-    if (
-      !isValidObjectId(
-        productId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid product ID.",
-      });
-    }
-
-    const query = {
-      _id: productId,
-    };
-
-    // ==================================================
-    // TENANT SECURITY
-    // ==================================================
-
-    if (isSuperAdmin(req.user)) {
-      // Super Admin can optionally filter
-      // by Business / Business Type.
-
-      if (req.query.business) {
         if (
-          !isValidObjectId(
-            req.query.business
-          )
+            !isValidObjectId(id)
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                "Invalid product ID."
+            );
         }
 
-        query.business =
-          req.query.business;
-      }
+        const tenant =
+            await resolveTenant(
+                req,
+                false
+            );
 
-      if (
-        req.query.businessType
-      ) {
         if (
-          !isValidObjectId(
-            req.query.businessType
-          )
+            tenant.error
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business type ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                tenant.error
+            );
         }
 
-        query.businessType =
-          req.query.businessType;
-      }
-    } else {
-      const context =
-        await getEffectiveBusinessContext(
-          req.user
+        const query = {
+            _id: id,
+        };
+
+        // ==================================================
+        // TENANT ISOLATION
+        // ==================================================
+
+        if (
+            tenant.tenantOwner
+        ) {
+            query.tenantOwner =
+                tenant.tenantOwner;
+        }
+
+        if (
+            tenant.business
+        ) {
+            query.business =
+                tenant.business;
+        }
+
+        if (
+            tenant.businessType
+        ) {
+            query.businessType =
+                tenant.businessType;
+        }
+
+        const product =
+            await populateProduct(
+                Product.findOne(
+                    query
+                )
+            );
+
+        if (!product) {
+            return errorResponse(
+                res,
+                404,
+                "Product not found."
+            );
+        }
+
+        // ==================================================
+        // INVENTORY
+        // ==================================================
+
+        const productBusinessId =
+            product.business?._id ||
+            product.business;
+
+        const inventory =
+            await ProductInventory.find(
+                {
+                    product:
+                        product._id,
+
+                    business:
+                        productBusinessId,
+
+                    isActive: true,
+                }
+            ).sort({
+                color: 1,
+                size: 1,
+            });
+
+        return successResponse(
+            res,
+            200,
+            "Product fetched successfully.",
+            {
+                product,
+                inventory,
+            }
+        );
+    } catch (error) {
+        console.error(
+            "Get Product Error:",
+            error
         );
 
-      if (!context?.business) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business.",
-        });
-      }
-
-      if (!context?.businessType) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business type.",
-        });
-      }
-
-      query.business =
-        context.business;
-
-      query.businessType =
-        context.businessType;
+        return errorResponse(
+            res,
+            500,
+            error.message ||
+                "Failed to fetch product."
+        );
     }
-
-    // ==================================================
-    // FIND PRODUCT
-    // ==================================================
-
-    const product =
-      await populateProduct(
-        Product.findOne(query)
-      );
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Product not found.",
-      });
-    }
-
-    // ==================================================
-    // INVENTORY
-    // ==================================================
-
-    const inventory =
-      await ProductInventory.find({
-        product:
-          product._id,
-
-        business:
-          product.business._id,
-
-        isActive: true,
-      }).sort({
-        color: 1,
-        size: 1,
-      });
-
-    return res.status(200).json({
-      success: true,
-      message:
-        "Product fetched successfully.",
-      data: {
-        product,
-        inventory,
-      },
-    });
-  } catch (error) {
-    console.error(
-      "Get Product Error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to fetch product.",
-    });
-  }
 };
 
 // ======================================================
@@ -1854,1167 +1690,1065 @@ export const getProductById = async (
 // ======================================================
 
 export const updateProduct = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  const uploadedCloudinaryImages = [];
+    const newUploadedImages = [];
 
-  try {
-    const productId =
-      req.params.id;
+    try {
+        const id =
+            req.params.id;
 
-    if (
-      !isValidObjectId(
-        productId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid product ID.",
-      });
-    }
-
-    const query = {
-      _id: productId,
-    };
-
-    // ==================================================
-    // TENANT SECURITY
-    // ==================================================
-
-    let effectiveContext = null;
-
-    if (isSuperAdmin(req.user)) {
-      // Super Admin can update any product.
-
-      if (req.query.business) {
         if (
-          !isValidObjectId(
-            req.query.business
-          )
+            !isValidObjectId(id)
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                "Invalid product ID."
+            );
         }
 
-        query.business =
-          req.query.business;
-      }
+        const tenant =
+            await resolveTenant(
+                req,
+                false
+            );
 
-      if (
-        req.query.businessType
-      ) {
         if (
-          !isValidObjectId(
-            req.query.businessType
-          )
+            tenant.error
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business type ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                tenant.error
+            );
         }
 
-        query.businessType =
-          req.query.businessType;
-      }
-    } else {
-      effectiveContext =
-        await getEffectiveBusinessContext(
-          req.user
-        );
+        // ==================================================
+        // FIND PRODUCT WITH TENANT ISOLATION
+        // ==================================================
 
-      if (
-        !effectiveContext?.business
-      ) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business.",
-        });
-      }
+        const query = {
+            _id: id,
+        };
 
-      if (
-        !effectiveContext?.businessType
-      ) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business type.",
-        });
-      }
-
-      query.business =
-        effectiveContext.business;
-
-      query.businessType =
-        effectiveContext.businessType;
-    }
-
-    // ==================================================
-    // FIND PRODUCT
-    // ==================================================
-
-    const product =
-      await Product.findOne(query);
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Product not found.",
-      });
-    }
-
-    const businessId =
-      product.business;
-
-    // ==================================================
-    // FIELDS
-    // ==================================================
-
-    const {
-      businessType,
-      category,
-      brand,
-      model,
-      name,
-      slug,
-      sku,
-      barcode,
-      barcodeType,
-      shortDescription,
-      description,
-      productType,
-      unit,
-      purchasePrice,
-      salePrice,
-      discount,
-      tax,
-      hasVariants,
-      isFeatured,
-      isActive,
-      removeImages,
-    } = req.body;
-
-    // ==================================================
-    // BUSINESS TYPE
-    // ==================================================
-
-    if (isSuperAdmin(req.user)) {
-      if (businessType) {
-        const result =
-          await validateBusinessType(
-            businessType,
-            businessId
-          );
-
-        if (!result.valid) {
-          return res.status(400).json({
-            success: false,
-            message:
-              result.message,
-          });
+        if (
+            tenant.tenantOwner
+        ) {
+            query.tenantOwner =
+                tenant.tenantOwner;
         }
 
-        product.businessType =
-          result.businessType._id;
-      }
-    } else {
-      // ------------------------------------------------
-      // ADMIN / MANAGER
-      // ------------------------------------------------
-      //
-      // Ignore businessType from frontend.
-      //
-      // This preserves tenant isolation.
-      //
+        if (
+            tenant.business
+        ) {
+            query.business =
+                tenant.business;
+        }
 
-      product.businessType =
-        effectiveContext.businessType;
-    }
+        if (
+            tenant.businessType
+        ) {
+            query.businessType =
+                tenant.businessType;
+        }
 
-    const effectiveBusinessTypeId =
-      product.businessType;
+        const product =
+            await Product.findOne(
+                query
+            );
 
-    // ==================================================
-    // CATEGORY
-    // ==================================================
+        if (!product) {
+            return errorResponse(
+                res,
+                404,
+                "Product not found."
+            );
+        }
 
-    if (category !== undefined) {
-      const result =
-        await validateCategory(
-          category,
-          businessId,
-          effectiveBusinessTypeId
-        );
+        // ==================================================
+        // PRODUCT'S ORIGINAL TENANT CONTEXT
+        // ==================================================
 
-      if (!result.valid) {
-        return res.status(400).json({
-          success: false,
-          message:
-            result.message,
-        });
-      }
+        const businessId =
+            product.business;
 
-      product.category =
-        result.category._id;
-    }
+        const businessTypeId =
+            product.businessType;
 
-    // ==================================================
-    // BRAND
-    // ==================================================
+        const tenantOwner =
+            product.tenantOwner;
 
-    let selectedBrand =
-      await Brand.findOne({
-        _id: product.brand,
-        business: businessId,
-        businessType:
-          effectiveBusinessTypeId,
-        isActive: true,
-      });
-
-    if (brand !== undefined) {
-      const result =
-        await validateBrand(
-          brand,
-          businessId,
-          effectiveBusinessTypeId
-        );
-
-      if (!result.valid) {
-        return res.status(400).json({
-          success: false,
-          message:
-            result.message,
-        });
-      }
-
-      product.brand =
-        result.brand._id;
-
-      selectedBrand =
-        result.brand;
-    }
-
-    if (!selectedBrand) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Current product brand is invalid or inactive.",
-      });
-    }
-
-    // ==================================================
-    // MODEL
-    // ==================================================
-
-    if (
-      model !== undefined
-    ) {
-      if (
-        model === null ||
-        model === ""
-      ) {
-        product.model = null;
-      } else {
-        const result =
-          await validateModel(
+        const {
+            category,
+            brand,
             model,
-            product.brand,
-            businessId,
-            effectiveBusinessTypeId
-          );
+            name,
+            slug,
+            sku,
+            barcode,
+            barcodeType,
+            shortDescription,
+            description,
+            productType,
+            unit,
+            purchasePrice,
+            salePrice,
+            discount,
+            tax,
+            hasVariants,
+            isFeatured,
+            isActive,
+            removeImages,
 
-        if (!result.valid) {
-          return res.status(400).json({
-            success: false,
-            message:
-              result.message,
-          });
+            // ------------------------------------------------
+            // These may arrive from frontend, but are ignored.
+            // ------------------------------------------------
+            business,
+            businessType,
+            tenantOwner:
+                requestedTenantOwner,
+        } = req.body;
+
+        // ==================================================
+        // PROTECT TENANT OWNERSHIP
+        // ==================================================
+        //
+        // Admin/Manager cannot move a product to another
+        // tenant/business/business type.
+        //
+        // Super Admin can manage selected tenant, but the
+        // existing product ownership remains unchanged.
+        //
+        // ==================================================
+
+        if (
+            !tenant.context.isSuperAdmin
+        ) {
+            if (
+                business !==
+                undefined ||
+                businessType !==
+                undefined ||
+                requestedTenantOwner !==
+                undefined
+            ) {
+                // We simply ignore these values rather than
+                // allowing them to modify tenant ownership.
+            }
         }
 
-        product.model =
-          result.model._id;
-      }
-    } else if (
-      brand !== undefined &&
-      product.model
-    ) {
-      // ------------------------------------------------
-      // Brand changed but model was not sent.
-      //
-      // Remove old model if it no longer belongs
-      // to the new brand.
-      // ------------------------------------------------
-
-      const currentModel =
-        await Model.findOne({
-          _id: product.model,
-          brand: product.brand,
-          business: businessId,
-          businessType:
-            effectiveBusinessTypeId,
-          isActive: true,
-        });
-
-      if (!currentModel) {
-        product.model = null;
-      }
-    }
-
-    // ==================================================
-    // SKU
-    // ==================================================
-
-    if (sku !== undefined) {
-      const normalizedSku =
-        sku?.trim().toUpperCase();
-
-      if (!normalizedSku) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "SKU cannot be empty.",
-        });
-      }
-
-      if (
-        normalizedSku !==
-        product.sku
-      ) {
-        const exists =
-          await Product.findOne({
-            business:
-              businessId,
-
-            sku:
-              normalizedSku,
-
-            _id: {
-              $ne:
-                product._id,
-            },
-          }).select("_id");
-
-        if (exists) {
-          return res.status(409).json({
-            success: false,
-            message:
-              "A product with this SKU already exists in this business.",
-          });
-        }
-      }
-
-      product.sku =
-        normalizedSku;
-    }
-
-    // ==================================================
-    // BARCODE
-    // ==================================================
-
-    if (
-      barcode !== undefined
-    ) {
-      const normalizedBarcode =
-        normalizeBarcode(
-          barcode
-        );
-
-      // ----------------------------------------------
-      // Check duplicate only when a real barcode
-      // exists.
-      // ----------------------------------------------
-
-      if (normalizedBarcode) {
-        const existingBarcode =
-          await Product.findOne({
-            business:
-              businessId,
-
-            barcode:
-              normalizedBarcode,
-
-            _id: {
-              $ne:
-                product._id,
-            },
-          }).select("_id");
-
-        if (existingBarcode) {
-          return res.status(409).json({
-            success: false,
-            message:
-              "A product with this barcode already exists in this business.",
-          });
-        }
-      }
-
-      product.barcode =
-        normalizedBarcode;
-
-      // No barcode means CUSTOM.
-      if (!normalizedBarcode) {
-        product.barcodeType =
-          "CUSTOM";
-      } else if (
-        barcodeType !==
-        undefined
-      ) {
-        product.barcodeType =
-          barcodeType;
-      }
-    } else if (
-      barcodeType !== undefined
-    ) {
-      // Barcode itself was not changed,
-      // only barcode type was changed.
-
-      if (product.barcode) {
-        product.barcodeType =
-          barcodeType;
-      } else {
-        product.barcodeType =
-          "CUSTOM";
-      }
-    }
-
-    // ==================================================
-    // PRODUCT TYPE / VARIANTS
-    // ==================================================
-
-    let nextProductType =
-      product.productType;
-
-    let nextHasVariants =
-      product.hasVariants;
-
-    if (
-      productType !==
-      undefined
-    ) {
-      nextProductType =
-        productType;
-    }
-
-    if (
-      hasVariants !==
-      undefined
-    ) {
-      nextHasVariants =
-        parseBoolean(
-          hasVariants
-        );
-    } else if (
-      productType !==
-      undefined
-    ) {
-      nextHasVariants =
-        productType ===
-        "variable";
-    }
-
-    const productTypeResult =
-      validateProductTypeAndVariants(
-        nextProductType,
-        nextHasVariants
-      );
-
-    if (!productTypeResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          productTypeResult.message,
-      });
-    }
-
-    product.productType =
-      nextProductType;
-
-    product.hasVariants =
-      nextHasVariants;
-
-    // ==================================================
-    // PRODUCT NAME
-    // ==================================================
-
-    if (name !== undefined) {
-      if (name?.trim()) {
-        product.name =
-          name.trim();
-      } else {
-        const modelData =
-          product.model
-            ? await Model.findOne({
-                _id:
-                  product.model,
-
-                brand:
-                  product.brand,
-
-                business:
-                  businessId,
-
-                businessType:
-                  effectiveBusinessTypeId,
-
-                isActive:
-                  true,
-              })
-            : null;
-
-        product.name =
-          `${selectedBrand.name}${
-            modelData
-              ? ` ${modelData.name}`
-              : ""
-          }`;
-      }
-    } else if (
-      brand !== undefined ||
-      model !== undefined ||
-      businessType !==
-        undefined
-    ) {
-      const brandData =
-        await Brand.findOne({
-          _id: product.brand,
-          business: businessId,
-          businessType:
-            effectiveBusinessTypeId,
-          isActive: true,
-        });
-
-      if (!brandData) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Selected brand is invalid.",
-        });
-      }
-
-      const modelData =
-        product.model
-          ? await Model.findOne({
-              _id:
-                product.model,
-
-              brand:
-                product.brand,
-
-              business:
-                businessId,
-
-              businessType:
-                effectiveBusinessTypeId,
-
-              isActive:
-                true,
-            })
-          : null;
-
-      product.name =
-        `${brandData.name}${
-          modelData
-            ? ` ${modelData.name}`
-            : ""
-        }`;
-    }
-
-    // ==================================================
-    // SLUG
-    // ==================================================
-
-    if (
-      slug !== undefined
-    ) {
-      const normalizedSlug =
-        slug?.trim()
-          ? slug
-              .trim()
-              .toLowerCase()
-          : product.name
-              .trim()
-              .toLowerCase()
-              .replace(
-                /[^a-z0-9]+/g,
-                "-"
-              )
-              .replace(
-                /^-+|-+$/g,
-                ""
-              );
-
-      product.slug =
-        normalizedSlug;
-    }
-
-    // ==================================================
-    // BASIC FIELDS
-    // ==================================================
-
-    if (
-      shortDescription !==
-      undefined
-    ) {
-      product.shortDescription =
-        shortDescription
-          ?.trim() || "";
-    }
-
-    if (
-      description !==
-      undefined
-    ) {
-      product.description =
-        description?.trim() ||
-        "";
-    }
-
-    if (
-      unit !== undefined
-    ) {
-      product.unit =
-        unit;
-    }
-
-    // ==================================================
-    // PRICES
-    // ==================================================
-
-    if (
-      purchasePrice !==
-      undefined
-    ) {
-      const value =
-        parseNumber(
-          purchasePrice,
-          0
-        );
-
-      if (value < 0) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Purchase price cannot be negative.",
-        });
-      }
-
-      product.purchasePrice =
-        value;
-    }
-
-    if (
-      salePrice !==
-      undefined
-    ) {
-      const value =
-        parseNumber(
-          salePrice,
-          0
-        );
-
-      if (value < 0) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Sale price cannot be negative.",
-        });
-      }
-
-      product.salePrice =
-        value;
-    }
-
-    if (
-      discount !==
-      undefined
-    ) {
-      const value =
-        parseNumber(
-          discount,
-          0
-        );
-
-      if (
-        value < 0 ||
-        value > 100
-      ) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Discount must be between 0 and 100.",
-        });
-      }
-
-      product.discount =
-        value;
-    }
-
-    if (
-      tax !== undefined
-    ) {
-      const value =
-        parseNumber(
-          tax,
-          0
-        );
-
-      if (value < 0) {
-        return res.status(400).json({
-          success: false,
-          message:
-            "Tax cannot be negative.",
-        });
-      }
-
-      product.tax =
-        value;
-    }
-
-    // ==================================================
-    // BOOLEAN FIELDS
-    // ==================================================
-
-    if (
-      isFeatured !==
-      undefined
-    ) {
-      product.isFeatured =
-        parseBoolean(
-          isFeatured
-        );
-    }
-
-    if (
-      isActive !==
-      undefined
-    ) {
-      product.isActive =
-        parseBoolean(
-          isActive
-        );
-    }
-
-    // ==================================================
-    // REMOVE OLD IMAGES
-    // ==================================================
-
-    if (removeImages) {
-      let imageIds =
-        removeImages;
-
-      if (
-        typeof imageIds ===
-        "string"
-      ) {
-        try {
-          imageIds =
-            JSON.parse(
-              imageIds
-            );
-        } catch {
-          imageIds = [
-            imageIds,
-          ];
-        }
-      }
-
-      if (
-        Array.isArray(
-          imageIds
-        )
-      ) {
-        for (const publicId of imageIds) {
-          const imageExists =
-            product.images.some(
-              (image) =>
-                image.publicId ===
-                publicId
+        // ==================================================
+        // VALIDATE PRODUCT BUSINESS
+        // ==================================================
+
+        const businessDoc =
+            await validateBusiness(
+                businessId
             );
 
-          if (!imageExists) {
-            continue;
-          }
-
-          await deleteFromCloudinary(
-            publicId
-          );
-
-          product.images =
-            product.images.filter(
-              (image) =>
-                image.publicId !==
-                publicId
+        if (!businessDoc) {
+            return errorResponse(
+                res,
+                400,
+                "Product business is not found or inactive."
             );
         }
-      }
-    }
 
-    // ==================================================
-    // ADD NEW IMAGES
-    // ==================================================
+        const businessTypeDoc =
+            await validateBusinessType(
+                businessTypeId,
+                businessId
+            );
 
-    if (
-      req.files &&
-      req.files.length > 0
-    ) {
-      for (const file of req.files) {
-        const result =
-          await uploadToCloudinary(
-            file.buffer,
-            "pos/products"
-          );
+        if (!businessTypeDoc) {
+            return errorResponse(
+                res,
+                400,
+                "Product business type is not found, inactive, or does not belong to this business."
+            );
+        }
 
-        uploadedCloudinaryImages.push(
-          result.public_id
+        // ==================================================
+        // CATEGORY
+        // ==================================================
+
+        if (
+            category !==
+            undefined
+        ) {
+            const categoryDoc =
+                await validateCategory(
+                    category,
+                    tenantOwner,
+                    businessId,
+                    businessTypeId
+                );
+
+            if (!categoryDoc) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Category does not belong to this tenant."
+                );
+            }
+
+            product.category =
+                categoryDoc._id;
+        }
+
+        // ==================================================
+        // BRAND
+        // ==================================================
+        //
+        // Brand is MASTER DATA.
+        //
+        // No tenantOwner check.
+        //
+        // ==================================================
+
+        if (
+            brand !==
+            undefined
+        ) {
+            const brandDoc =
+                await validateBrand(
+                    brand,
+                    businessId,
+                    businessTypeId
+                );
+
+            if (!brandDoc) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Brand does not belong to the selected business type."
+                );
+            }
+
+            product.brand =
+                brandDoc._id;
+
+            // ------------------------------------------------
+            // Existing model may no longer belong to new brand
+            // ------------------------------------------------
+
+            if (
+                product.model
+            ) {
+                const currentModel =
+                    await validateModel(
+                        product.model,
+                        businessId,
+                        businessTypeId,
+                        brandDoc._id
+                    );
+
+                if (
+                    !currentModel
+                ) {
+                    product.model =
+                        null;
+                }
+            }
+        }
+
+        // ==================================================
+        // MODEL
+        // ==================================================
+
+        if (
+            model !==
+            undefined
+        ) {
+            if (
+                model ===
+                    null ||
+                model ===
+                    ""
+            ) {
+                product.model =
+                    null;
+            } else {
+                const modelDoc =
+                    await validateModel(
+                        model,
+                        businessId,
+                        businessTypeId,
+                        product.brand
+                    );
+
+                if (
+                    !modelDoc
+                ) {
+                    return errorResponse(
+                        res,
+                        400,
+                        "Model does not belong to the selected brand and business type."
+                    );
+                }
+
+                product.model =
+                    modelDoc._id;
+            }
+        }
+
+        // ==================================================
+        // SKU
+        // ==================================================
+
+        if (
+            sku !==
+            undefined
+        ) {
+            const normalizedSku =
+                normalizeSku(
+                    sku
+                );
+
+            if (!normalizedSku) {
+                return errorResponse(
+                    res,
+                    400,
+                    "SKU cannot be empty."
+                );
+            }
+
+            if (
+                normalizedSku !==
+                product.sku
+            ) {
+                const exists =
+                    await Product.findOne(
+                        {
+                            tenantOwner,
+
+                            sku:
+                                normalizedSku,
+
+                            _id: {
+                                $ne:
+                                    product._id,
+                            },
+                        }
+                    ).select(
+                        "_id"
+                    );
+
+                if (exists) {
+                    return errorResponse(
+                        res,
+                        409,
+                        "A product with this SKU already exists in this tenant."
+                    );
+                }
+            }
+
+            product.sku =
+                normalizedSku;
+        }
+
+        // ==================================================
+        // BARCODE
+        // ==================================================
+
+        if (
+            barcode !==
+            undefined
+        ) {
+            const normalizedBarcode =
+                normalizeBarcode(
+                    barcode
+                );
+
+            if (
+                normalizedBarcode
+            ) {
+                const exists =
+                    await Product.findOne(
+                        {
+                            tenantOwner,
+
+                            barcode:
+                                normalizedBarcode,
+
+                            _id: {
+                                $ne:
+                                    product._id,
+                            },
+                        }
+                    ).select(
+                        "_id"
+                    );
+
+                if (exists) {
+                    return errorResponse(
+                        res,
+                        409,
+                        "A product with this barcode already exists in this tenant."
+                    );
+                }
+            }
+
+            product.barcode =
+                normalizedBarcode;
+
+            product.barcodeType =
+                normalizedBarcode
+                    ? barcodeType ||
+                      product.barcodeType ||
+                      "CUSTOM"
+                    : "CUSTOM";
+        } else if (
+            barcodeType !==
+            undefined
+        ) {
+            product.barcodeType =
+                product.barcode
+                    ? barcodeType
+                    : "CUSTOM";
+        }
+
+        // ==================================================
+        // PRODUCT TYPE / VARIANTS
+        // ==================================================
+
+        const nextType =
+            productType !==
+            undefined
+                ? productType
+                : product.productType;
+
+        const nextVariants =
+            hasVariants !==
+            undefined
+                ? parseBoolean(
+                      hasVariants
+                  )
+                : productType !==
+                  undefined
+                ? productType ===
+                  "variable"
+                : product.hasVariants;
+
+        if (
+            nextType ===
+                "simple" &&
+            nextVariants
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "A simple product cannot have variants."
+            );
+        }
+
+        if (
+            nextType ===
+                "variable" &&
+            !nextVariants
+        ) {
+            return errorResponse(
+                res,
+                400,
+                "A variable product must have variants."
+            );
+        }
+
+        product.productType =
+            nextType;
+
+        product.hasVariants =
+            nextVariants;
+
+        // ==================================================
+        // NAME
+        // ==================================================
+
+        if (
+            name !==
+            undefined
+        ) {
+            const trimmedName =
+                name.trim();
+
+            if (!trimmedName) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Product name cannot be empty."
+                );
+            }
+
+            product.name =
+                trimmedName;
+        }
+
+        // ==================================================
+        // SLUG
+        // ==================================================
+
+        if (
+            slug !==
+            undefined
+        ) {
+            product.slug =
+                slug.trim()
+                    ? slug
+                          .trim()
+                          .toLowerCase()
+                    : makeSlug(
+                          product.name
+                      );
+        }
+
+        // ==================================================
+        // TEXT
+        // ==================================================
+
+        if (
+            shortDescription !==
+            undefined
+        ) {
+            product.shortDescription =
+                shortDescription.trim();
+        }
+
+        if (
+            description !==
+            undefined
+        ) {
+            product.description =
+                description.trim();
+        }
+
+        // ==================================================
+        // UNIT
+        // ==================================================
+
+        if (
+            unit !==
+            undefined
+        ) {
+            product.unit =
+                unit;
+        }
+
+        // ==================================================
+        // PURCHASE PRICE
+        // ==================================================
+
+        if (
+            purchasePrice !==
+            undefined
+        ) {
+            const value =
+                parseNumber(
+                    purchasePrice
+                );
+
+            if (
+                value < 0
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Purchase price cannot be negative."
+                );
+            }
+
+            product.purchasePrice =
+                value;
+        }
+
+        // ==================================================
+        // SALE PRICE
+        // ==================================================
+
+        if (
+            salePrice !==
+            undefined
+        ) {
+            const value =
+                parseNumber(
+                    salePrice
+                );
+
+            if (
+                value < 0
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Sale price cannot be negative."
+                );
+            }
+
+            product.salePrice =
+                value;
+        }
+
+        // ==================================================
+        // DISCOUNT
+        // ==================================================
+
+        if (
+            discount !==
+            undefined
+        ) {
+            const value =
+                parseNumber(
+                    discount
+                );
+
+            if (
+                value < 0 ||
+                value > 100
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Discount must be between 0 and 100."
+                );
+            }
+
+            product.discount =
+                value;
+        }
+
+        // ==================================================
+        // TAX
+        // ==================================================
+
+        if (
+            tax !==
+            undefined
+        ) {
+            const value =
+                parseNumber(
+                    tax
+                );
+
+            if (
+                value < 0
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Tax cannot be negative."
+                );
+            }
+
+            product.tax =
+                value;
+        }
+
+        // ==================================================
+        // BOOLEAN FIELDS
+        // ==================================================
+
+        if (
+            isFeatured !==
+            undefined
+        ) {
+            product.isFeatured =
+                parseBoolean(
+                    isFeatured
+                );
+        }
+
+        if (
+            isActive !==
+            undefined
+        ) {
+            product.isActive =
+                parseBoolean(
+                    isActive
+                );
+        }
+
+        // ==================================================
+        // REMOVE IMAGES
+        // ==================================================
+
+        if (
+            removeImages
+        ) {
+            let images =
+                removeImages;
+
+            if (
+                typeof images ===
+                "string"
+            ) {
+                try {
+                    images =
+                        JSON.parse(
+                            images
+                        );
+                } catch {
+                    images = [
+                        images,
+                    ];
+                }
+            }
+
+            if (
+                Array.isArray(
+                    images
+                )
+            ) {
+                for (
+                    const publicId of images
+                ) {
+                    if (
+                        !publicId
+                    ) {
+                        continue;
+                    }
+
+                    const exists =
+                        product.images.some(
+                            (
+                                image
+                            ) =>
+                                image.publicId ===
+                                publicId
+                        );
+
+                    if (
+                        !exists
+                    ) {
+                        continue;
+                    }
+
+                    await deleteFromCloudinary(
+                        publicId
+                    );
+
+                    product.images =
+                        product.images.filter(
+                            (
+                                image
+                            ) =>
+                                image.publicId !==
+                                publicId
+                        );
+                }
+            }
+        }
+
+        // ==================================================
+        // ADD NEW IMAGES
+        // ==================================================
+
+        if (
+            req.files?.length
+        ) {
+            for (
+                const file of req.files
+            ) {
+                const result =
+                    await uploadToCloudinary(
+                        file.buffer,
+                        "pos/products"
+                    );
+
+                newUploadedImages.push(
+                    result.public_id
+                );
+
+                product.images.push({
+                    url:
+                        result.secure_url,
+
+                    publicId:
+                        result.public_id,
+
+                    assetId:
+                        result.asset_id ||
+                        null,
+                });
+            }
+        }
+
+        // ==================================================
+        // AUDIT
+        // ==================================================
+
+        product.updatedBy =
+            req.user._id;
+
+        // ==================================================
+        // SAVE
+        // ==================================================
+
+        await product.save();
+
+        // ==================================================
+        // INVENTORY
+        // ==================================================
+
+        if (
+            !product.hasVariants
+        ) {
+            let inventory =
+                await ProductInventory.findOne(
+                    {
+                        product:
+                            product._id,
+
+                        business:
+                            businessId,
+
+                        color: null,
+                        size: null,
+                    }
+                );
+
+            if (!inventory) {
+                await ProductInventory.create(
+                    {
+                        business:
+                            businessId,
+
+                        product:
+                            product._id,
+
+                        color: null,
+                        size: null,
+
+                        quantity: 0,
+                        minStock: 0,
+                        maxStock: null,
+
+                        purchasePrice:
+                            product.purchasePrice,
+
+                        salePrice:
+                            product.salePrice,
+
+                        discount:
+                            product.discount,
+
+                        tax:
+                            product.tax,
+
+                        isActive: true,
+
+                        createdBy:
+                            req.user._id,
+                    }
+                );
+            } else {
+                inventory.purchasePrice =
+                    product.purchasePrice;
+
+                inventory.salePrice =
+                    product.salePrice;
+
+                inventory.discount =
+                    product.discount;
+
+                inventory.tax =
+                    product.tax;
+
+                inventory.updatedBy =
+                    req.user._id;
+
+                await inventory.save();
+            }
+        }
+
+        // ==================================================
+        // RETURN UPDATED PRODUCT
+        // ==================================================
+
+        const updated =
+            await populateProduct(
+                Product.findById(
+                    product._id
+                )
+            );
+
+        return successResponse(
+            res,
+            200,
+            "Product updated successfully.",
+            updated
+        );
+    } catch (error) {
+        console.error(
+            "Update Product Error:",
+            error
         );
 
-        product.images.push({
-          url:
-            result.secure_url,
+        // ==================================================
+        // CLEANUP NEW CLOUDINARY IMAGES
+        // ==================================================
 
-          publicId:
-            result.public_id,
-
-          assetId:
-            result.asset_id ||
-            null,
-        });
-      }
-    }
-
-    // ==================================================
-    // UPDATE AUDIT
-    // ==================================================
-
-    product.updatedBy =
-      req.user._id;
-
-    // ==================================================
-    // SAVE PRODUCT
-    // ==================================================
-
-    await product.save();
-
-    // ==================================================
-    // SYNC DEFAULT INVENTORY
-    // ==================================================
-
-    if (
-      !product.hasVariants
-    ) {
-      let inventory =
-        await ProductInventory.findOne({
-          product:
-            product._id,
-
-          business:
-            businessId,
-
-          color: null,
-          size: null,
-        });
-
-      // ------------------------------------------------
-      // CREATE INVENTORY IF MISSING
-      // ------------------------------------------------
-
-      if (!inventory) {
-        inventory =
-          await ProductInventory.create({
-            business:
-              businessId,
-
-            product:
-              product._id,
-
-            color: null,
-            size: null,
-
-            quantity: 0,
-            minStock: 0,
-            maxStock: null,
-
-            purchasePrice:
-              product.purchasePrice,
-
-            salePrice:
-              product.salePrice,
-
-            discount:
-              product.discount,
-
-            tax:
-              product.tax,
-
-            isActive: true,
-
-            createdBy:
-              req.user._id,
-          });
-      } else {
-        // ------------------------------------------------
-        // SYNC PRICES
-        // ------------------------------------------------
-
-        inventory.purchasePrice =
-          product.purchasePrice;
-
-        inventory.salePrice =
-          product.salePrice;
-
-        inventory.discount =
-          product.discount;
-
-        inventory.tax =
-          product.tax;
-
-        inventory.updatedBy =
-          req.user._id;
-
-        await inventory.save();
-      }
-    }
-
-    // ==================================================
-    // POPULATE UPDATED PRODUCT
-    // ==================================================
-
-    const updatedProduct =
-      await populateProduct(
-        Product.findById(
-          product._id
-        )
-      );
-
-    return res.status(200).json({
-      success: true,
-      message:
-        "Product updated successfully.",
-      data:
-        updatedProduct,
-    });
-  } catch (error) {
-    console.error(
-      "Update Product Error:",
-      error
-    );
-
-    // --------------------------------------------------
-    // CLEAN UP NEW CLOUDINARY IMAGES IF UPDATE FAILED
-    // --------------------------------------------------
-
-    if (
-      uploadedCloudinaryImages.length
-    ) {
-      for (const publicId of uploadedCloudinaryImages) {
-        try {
-          await deleteFromCloudinary(
-            publicId
-          );
-        } catch (cloudinaryError) {
-          console.error(
-            "Cloudinary cleanup error:",
-            cloudinaryError
-          );
+        for (
+            const publicId of newUploadedImages
+        ) {
+            try {
+                await deleteFromCloudinary(
+                    publicId
+                );
+            } catch {}
         }
-      }
+
+        if (
+            handleDuplicateError(
+                error,
+                res
+            )
+        ) {
+            return;
+        }
+
+        return errorResponse(
+            res,
+            500,
+            error.message ||
+                "Failed to update product."
+        );
     }
-
-    // --------------------------------------------------
-    // DUPLICATE KEY
-    // --------------------------------------------------
-
-    if (
-      handleDuplicateKeyError(
-        error,
-        res
-      )
-    ) {
-      return;
-    }
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to update product.",
-    });
-  }
 };
 
 // ======================================================
-// DELETE PRODUCT - SOFT DELETE
+// DELETE PRODUCT
 // ======================================================
 
 export const deleteProduct = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  try {
-    const productId =
-      req.params.id;
+    try {
+        const id =
+            req.params.id;
 
-    if (
-      !isValidObjectId(
-        productId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid product ID.",
-      });
-    }
-
-    const query = {
-      _id: productId,
-    };
-
-    // ==================================================
-    // TENANT SECURITY
-    // ==================================================
-
-    if (isSuperAdmin(req.user)) {
-      if (req.query.business) {
         if (
-          !isValidObjectId(
-            req.query.business
-          )
+            !isValidObjectId(id)
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                "Invalid product ID."
+            );
         }
 
-        query.business =
-          req.query.business;
-      }
+        const tenant =
+            await resolveTenant(
+                req,
+                false
+            );
 
-      if (
-        req.query.businessType
-      ) {
         if (
-          !isValidObjectId(
-            req.query.businessType
-          )
+            tenant.error
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business type ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                tenant.error
+            );
         }
 
-        query.businessType =
-          req.query.businessType;
-      }
-    } else {
-      const context =
-        await getEffectiveBusinessContext(
-          req.user
+        // ==================================================
+        // TENANT FILTER
+        // ==================================================
+
+        const query = {
+            _id: id,
+        };
+
+        if (
+            tenant.tenantOwner
+        ) {
+            query.tenantOwner =
+                tenant.tenantOwner;
+        }
+
+        if (
+            tenant.business
+        ) {
+            query.business =
+                tenant.business;
+        }
+
+        if (
+            tenant.businessType
+        ) {
+            query.businessType =
+                tenant.businessType;
+        }
+
+        const product =
+            await Product.findOne(
+                query
+            );
+
+        if (!product) {
+            return errorResponse(
+                res,
+                404,
+                "Product not found."
+            );
+        }
+
+        // ==================================================
+        // SOFT DELETE
+        // ==================================================
+
+        product.isActive =
+            false;
+
+        product.updatedBy =
+            req.user._id;
+
+        await product.save();
+
+        // ==================================================
+        // DISABLE INVENTORY
+        // ==================================================
+
+        await ProductInventory.updateMany(
+            {
+                product:
+                    product._id,
+
+                business:
+                    product.business,
+            },
+            {
+                $set: {
+                    isActive:
+                        false,
+
+                    updatedBy:
+                        req.user._id,
+                },
+            }
         );
 
-      if (!context?.business) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business.",
-        });
-      }
+        return successResponse(
+            res,
+            200,
+            "Product deleted successfully."
+        );
+    } catch (error) {
+        console.error(
+            "Delete Product Error:",
+            error
+        );
 
-      if (!context?.businessType) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business type.",
-        });
-      }
-
-      query.business =
-        context.business;
-
-      query.businessType =
-        context.businessType;
+        return errorResponse(
+            res,
+            500,
+            error.message ||
+                "Failed to delete product."
+        );
     }
-
-    // ==================================================
-    // FIND PRODUCT
-    // ==================================================
-
-    const product =
-      await Product.findOne(query);
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Product not found.",
-      });
-    }
-
-    // ==================================================
-    // SOFT DELETE PRODUCT
-    // ==================================================
-
-    product.isActive =
-      false;
-
-    product.updatedBy =
-      req.user._id;
-
-    await product.save();
-
-    // ==================================================
-    // SOFT DELETE INVENTORY
-    // ==================================================
-
-    await ProductInventory.updateMany(
-      {
-        product:
-          product._id,
-
-        business:
-          product.business,
-      },
-      {
-        $set: {
-          isActive:
-            false,
-
-          updatedBy:
-            req.user._id,
-        },
-      }
-    );
-
-    return res.status(200).json({
-      success: true,
-      message:
-        "Product deleted successfully.",
-    });
-  } catch (error) {
-    console.error(
-      "Delete Product Error:",
-      error
-    );
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to delete product.",
-    });
-  }
 };
 
 // ======================================================
@@ -3022,283 +2756,319 @@ export const deleteProduct = async (
 // ======================================================
 
 export const restoreProduct = async (
-  req,
-  res
+    req,
+    res
 ) => {
-  try {
-    const productId =
-      req.params.id;
+    try {
+        const id =
+            req.params.id;
 
-    if (
-      !isValidObjectId(
-        productId
-      )
-    ) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "Invalid product ID.",
-      });
-    }
-
-    const query = {
-      _id: productId,
-    };
-
-    // ==================================================
-    // TENANT SECURITY
-    // ==================================================
-
-    if (isSuperAdmin(req.user)) {
-      if (req.query.business) {
         if (
-          !isValidObjectId(
-            req.query.business
-          )
+            !isValidObjectId(id)
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                "Invalid product ID."
+            );
         }
 
-        query.business =
-          req.query.business;
-      }
+        const tenant =
+            await resolveTenant(
+                req,
+                false
+            );
 
-      if (
-        req.query.businessType
-      ) {
         if (
-          !isValidObjectId(
-            req.query.businessType
-          )
+            tenant.error
         ) {
-          return res.status(400).json({
-            success: false,
-            message:
-              "Invalid business type ID.",
-          });
+            return errorResponse(
+                res,
+                400,
+                tenant.error
+            );
         }
 
-        query.businessType =
-          req.query.businessType;
-      }
-    } else {
-      const context =
-        await getEffectiveBusinessContext(
-          req.user
+        // ==================================================
+        // TENANT FILTER
+        // ==================================================
+
+        const query = {
+            _id: id,
+        };
+
+        if (
+            tenant.tenantOwner
+        ) {
+            query.tenantOwner =
+                tenant.tenantOwner;
+        }
+
+        if (
+            tenant.business
+        ) {
+            query.business =
+                tenant.business;
+        }
+
+        if (
+            tenant.businessType
+        ) {
+            query.businessType =
+                tenant.businessType;
+        }
+
+        const product =
+            await Product.findOne(
+                query
+            );
+
+        if (!product) {
+            return errorResponse(
+                res,
+                404,
+                "Product not found."
+            );
+        }
+
+        // ==================================================
+        // SKU CONFLICT
+        // ==================================================
+
+        const skuConflict =
+            await Product.findOne({
+                tenantOwner:
+                    product.tenantOwner,
+
+                sku:
+                    product.sku,
+
+                _id: {
+                    $ne:
+                        product._id,
+                },
+
+                isActive: true,
+            }).select(
+                "_id"
+            );
+
+        if (
+            skuConflict
+        ) {
+            return errorResponse(
+                res,
+                409,
+                "This product cannot be restored because another active product already uses the same SKU in this tenant."
+            );
+        }
+
+        // ==================================================
+        // BARCODE CONFLICT
+        // ==================================================
+
+        if (
+            product.barcode
+        ) {
+            const barcodeConflict =
+                await Product.findOne({
+                    tenantOwner:
+                        product.tenantOwner,
+
+                    barcode:
+                        product.barcode,
+
+                    _id: {
+                        $ne:
+                            product._id,
+                    },
+
+                    isActive: true,
+                }).select(
+                    "_id"
+                );
+
+            if (
+                barcodeConflict
+            ) {
+                return errorResponse(
+                    res,
+                    409,
+                    "This product cannot be restored because another active product already uses the same barcode in this tenant."
+                );
+            }
+        }
+
+        // ==================================================
+        // VALIDATE BUSINESS
+        // ==================================================
+
+        const business =
+            await validateBusiness(
+                product.business
+            );
+
+        if (!business) {
+            return errorResponse(
+                res,
+                400,
+                "Product business is inactive or unavailable."
+            );
+        }
+
+        // ==================================================
+        // VALIDATE BUSINESS TYPE
+        // ==================================================
+
+        const businessType =
+            await validateBusinessType(
+                product.businessType,
+                product.business
+            );
+
+        if (!businessType) {
+            return errorResponse(
+                res,
+                400,
+                "Product business type is inactive or unavailable."
+            );
+        }
+
+        // ==================================================
+        // VALIDATE BRAND
+        // ==================================================
+
+        const brand =
+            await validateBrand(
+                product.brand,
+                product.business,
+                product.businessType
+            );
+
+        if (!brand) {
+            return errorResponse(
+                res,
+                400,
+                "Product brand is inactive or unavailable."
+            );
+        }
+
+        // ==================================================
+        // VALIDATE MODEL
+        // ==================================================
+
+        if (
+            product.model
+        ) {
+            const model =
+                await validateModel(
+                    product.model,
+                    product.business,
+                    product.businessType,
+                    product.brand
+                );
+
+            if (!model) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Product model is inactive, unavailable, or does not belong to the selected brand."
+                );
+            }
+        }
+
+        // ==================================================
+        // VALIDATE CATEGORY
+        // ==================================================
+
+        const category =
+            await validateCategory(
+                product.category,
+                product.tenantOwner,
+                product.business,
+                product.businessType
+            );
+
+        if (!category) {
+            return errorResponse(
+                res,
+                400,
+                "Product category is inactive or unavailable for this tenant."
+            );
+        }
+
+        // ==================================================
+        // RESTORE
+        // ==================================================
+
+        product.isActive =
+            true;
+
+        product.updatedBy =
+            req.user._id;
+
+        await product.save();
+
+        // ==================================================
+        // RESTORE INVENTORY
+        // ==================================================
+
+        await ProductInventory.updateMany(
+            {
+                product:
+                    product._id,
+
+                business:
+                    product.business,
+            },
+            {
+                $set: {
+                    isActive:
+                        true,
+
+                    updatedBy:
+                        req.user._id,
+                },
+            }
         );
 
-      if (!context?.business) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business.",
-        });
-      }
+        // ==================================================
+        // RETURN RESTORED PRODUCT
+        // ==================================================
 
-      if (!context?.businessType) {
-        return res.status(403).json({
-          success: false,
-          message:
-            "Your account is not associated with a business type.",
-        });
-      }
+        const restored =
+            await populateProduct(
+                Product.findById(
+                    product._id
+                )
+            );
 
-      query.business =
-        context.business;
+        return successResponse(
+            res,
+            200,
+            "Product restored successfully.",
+            restored
+        );
+    } catch (error) {
+        console.error(
+            "Restore Product Error:",
+            error
+        );
 
-      query.businessType =
-        context.businessType;
+        if (
+            handleDuplicateError(
+                error,
+                res
+            )
+        ) {
+            return;
+        }
+
+        return errorResponse(
+            res,
+            500,
+            error.message ||
+                "Failed to restore product."
+        );
     }
-
-    // ==================================================
-    // FIND PRODUCT
-    // ==================================================
-
-    const product =
-      await Product.findOne(query);
-
-    if (!product) {
-      return res.status(404).json({
-        success: false,
-        message:
-          "Product not found.",
-      });
-    }
-
-    // ==================================================
-    // CHECK SKU CONFLICT
-    // ==================================================
-
-    const skuConflict =
-      await Product.findOne({
-        business:
-          product.business,
-
-        sku:
-          product.sku,
-
-        _id: {
-          $ne:
-            product._id,
-        },
-
-        isActive: true,
-      }).select("_id");
-
-    if (skuConflict) {
-      return res.status(409).json({
-        success: false,
-        message:
-          "This product cannot be restored because another active product already uses the same SKU in this business.",
-      });
-    }
-
-    // ==================================================
-    // CHECK BARCODE CONFLICT
-    // ==================================================
-
-    if (product.barcode) {
-      const barcodeConflict =
-        await Product.findOne({
-          business:
-            product.business,
-
-          barcode:
-            product.barcode,
-
-          _id: {
-            $ne:
-              product._id,
-          },
-
-          isActive: true,
-        }).select("_id");
-
-      if (barcodeConflict) {
-        return res.status(409).json({
-          success: false,
-          message:
-            "This product cannot be restored because another active product already uses the same barcode in this business.",
-        });
-      }
-    }
-
-    // ==================================================
-    // VALIDATE CURRENT BUSINESS
-    // ==================================================
-
-    const businessResult =
-      await validateBusiness(
-        product.business
-      );
-
-    if (!businessResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "The product's business is inactive or no longer available.",
-      });
-    }
-
-    // ==================================================
-    // VALIDATE CURRENT BUSINESS TYPE
-    // ==================================================
-
-    const businessTypeResult =
-      await validateBusinessType(
-        product.businessType,
-        product.business
-      );
-
-    if (!businessTypeResult.valid) {
-      return res.status(400).json({
-        success: false,
-        message:
-          "The product's business type is inactive or no longer belongs to this business.",
-      });
-    }
-
-    // ==================================================
-    // RESTORE PRODUCT
-    // ==================================================
-
-    product.isActive =
-      true;
-
-    product.updatedBy =
-      req.user._id;
-
-    await product.save();
-
-    // ==================================================
-    // RESTORE INVENTORY
-    // ==================================================
-
-    await ProductInventory.updateMany(
-      {
-        product:
-          product._id,
-
-        business:
-          product.business,
-      },
-      {
-        $set: {
-          isActive:
-            true,
-
-          updatedBy:
-            req.user._id,
-        },
-      }
-    );
-
-    // ==================================================
-    // POPULATE
-    // ==================================================
-
-    const restoredProduct =
-      await populateProduct(
-        Product.findById(
-          product._id
-        )
-      );
-
-    return res.status(200).json({
-      success: true,
-      message:
-        "Product restored successfully.",
-      data:
-        restoredProduct,
-    });
-  } catch (error) {
-    console.error(
-      "Restore Product Error:",
-      error
-    );
-
-    // --------------------------------------------------
-    // DUPLICATE KEY
-    // --------------------------------------------------
-
-    if (
-      handleDuplicateKeyError(
-        error,
-        res
-      )
-    ) {
-      return;
-    }
-
-    return res.status(500).json({
-      success: false,
-      message:
-        error.message ||
-        "Failed to restore product.",
-    });
-  }
 };

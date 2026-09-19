@@ -1,5 +1,3 @@
-import mongoose from "mongoose";
-
 import Product from "../models/Product.js";
 import ProductInventory from "../models/ProductInventory.js";
 import User from "../models/User.js";
@@ -9,46 +7,14 @@ import {
   errorResponse,
 } from "../utils/apiResponse.js";
 
+import {
+  getTenantContext,
+  isValidObjectId,
+} from "../utils/tenantContext.js";
+
 // ======================================================
 // HELPERS
 // ======================================================
-
-const isValidObjectId = (id) =>
-  mongoose.Types.ObjectId.isValid(id);
-
-const getUserRole = (user) =>
-  user?.role?.slug || user?.role?.name?.toLowerCase();
-
-const isSuperAdmin = (user) =>
-  getUserRole(user) === "super-admin";
-
-const getEffectiveContext = async (user) => {
-  if (!user) return null;
-
-  if (user.business) {
-    return {
-      business: user.business?._id || user.business,
-      businessType:
-        user.businessType?._id || user.businessType || null,
-    };
-  }
-
-  if (user.createdBy) {
-    const creator = await User.findById(user.createdBy)
-      .select("business businessType")
-      .lean();
-
-    if (!creator) return null;
-
-    return {
-      business: creator.business?._id || creator.business,
-      businessType:
-        creator.businessType?._id || creator.businessType || null,
-    };
-  }
-
-  return null;
-};
 
 const parseNumber = (value, field) => {
   if (value === undefined || value === null || value === "") {
@@ -69,29 +35,50 @@ const parseNumber = (value, field) => {
 const parseBoolean = (value) => {
   if (value === true || value === "true") return true;
   if (value === false || value === "false") return false;
-
   return undefined;
 };
 
 const normalizeVariant = (value) => {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
+  if (value === undefined || value === null) return null;
   const normalized = String(value).trim();
-
   return normalized || null;
 };
 
-const populateInventory = (query) =>
-  query
+const getRoleSlug = (user) => {
+  if (!user) return null;
+
+  if (user.role && typeof user.role === "object" && user.role.slug) {
+    return user.role.slug.toLowerCase();
+  }
+
+  if (user.role && typeof user.role === "object" && user.role.name) {
+    return user.role.name.toLowerCase();
+  }
+
+  if (user.role) {
+    return String(user.role).toLowerCase();
+  }
+
+  return null;
+};
+
+const populateInventory = (query) => {
+  return query
+    .populate({
+      path: "tenantOwner",
+      select: "name email",
+    })
     .populate({
       path: "product",
       select:
-        "name sku barcode brand model category business businessType hasVariants",
+        "name sku barcode brand model category business businessType tenantOwner hasVariants",
     })
     .populate({
       path: "business",
+      select: "name",
+    })
+    .populate({
+      path: "businessType",
       select: "name",
     })
     .populate({
@@ -102,66 +89,182 @@ const populateInventory = (query) =>
       path: "updatedBy",
       select: "name email",
     });
-
-const getAllowedProductQuery = (context) => ({
-  business: context.business,
-  businessType: context.businessType,
-});
-
-const getAllowedProductIds = async (context, extraQuery = {}) => {
-  return Product.distinct("_id", {
-    ...getAllowedProductQuery(context),
-    ...extraQuery,
-  });
 };
 
-const getProductForUser = async (user, productId) => {
-  if (!isValidObjectId(productId)) {
-    return null;
-  }
+// ======================================================
+// RESOLVE TENANT
+// ======================================================
 
-  const query = {
-    _id: productId,
-  };
+const resolveTenant = async (req, requireOwner = false) => {
+  const context = await getTenantContext(req);
 
-  if (!isSuperAdmin(user)) {
-    const context = await getEffectiveContext(user);
+  if (context.isSuperAdmin) {
+    const requestedTenantOwner =
+      req.body?.tenantOwner || req.query?.tenantOwner;
 
-    if (!context?.business || !context?.businessType) {
-      return null;
+    if (!requestedTenantOwner) {
+      if (requireOwner) {
+        return { error: "Tenant owner is required." };
+      }
+
+      return {
+        context,
+        tenantOwner: null,
+        business: null,
+        businessType: null,
+      };
     }
 
-    query.business = context.business;
-    query.businessType = context.businessType;
+    if (!isValidObjectId(requestedTenantOwner)) {
+      return { error: "Invalid tenant owner ID." };
+    }
+
+    const admin = await User.findOne({ _id: requestedTenantOwner })
+      .select("_id role business businessType status")
+      .populate({ path: "role", select: "slug" })
+      .lean();
+
+    if (!admin) {
+      return { error: "Tenant owner not found." };
+    }
+
+    const roleSlug = getRoleSlug(admin);
+
+    if (roleSlug !== "admin") {
+      return { error: "Tenant owner must be an Admin." };
+    }
+
+    if (admin.status !== "active") {
+      return { error: "Tenant owner account is not active." };
+    }
+
+    if (!admin.business || !admin.businessType) {
+      return {
+        error:
+          "Tenant owner is not assigned to a business and business type.",
+      };
+    }
+
+    return {
+      context,
+      tenantOwner: admin._id,
+      business: admin.business,
+      businessType: admin.businessType,
+    };
+  }
+
+  if (!context.tenantOwner) {
+    return { error: "Your account is not associated with a tenant." };
+  }
+
+  if (!context.business || !context.businessType) {
+    return {
+      error:
+        "Your account is not associated with a business and business type.",
+    };
+  }
+
+  return {
+    context,
+    tenantOwner: context.tenantOwner,
+    business: context.business,
+    businessType: context.businessType,
+  };
+};
+
+// ======================================================
+// GET PRODUCT FOR CURRENT USER
+// ======================================================
+
+const getProductForUser = async (req, productId) => {
+  if (!isValidObjectId(productId)) return null;
+
+  const context = await getTenantContext(req);
+
+  const query = { _id: productId };
+
+  if (!context.isSuperAdmin) {
+    if (!context.tenantOwner) return null;
+
+    query.tenantOwner = context.tenantOwner;
+
+    if (context.business) {
+      query.business = context.business;
+    }
+
+    if (context.businessType) {
+      query.businessType = context.businessType;
+    }
   }
 
   return Product.findOne(query).lean();
 };
 
-const getInventoryForUser = async (user, id, isActive = true) => {
-  if (!isValidObjectId(id)) {
-    return null;
-  }
+// ======================================================
+// GET INVENTORY FOR CURRENT USER
+// ======================================================
+
+const getInventoryForUser = async (req, inventoryId, isActive = true) => {
+  if (!isValidObjectId(inventoryId)) return null;
+
+  const context = await getTenantContext(req);
 
   const query = {
-    _id: id,
+    _id: inventoryId,
     isActive,
   };
 
-  if (!isSuperAdmin(user)) {
-    const context = await getEffectiveContext(user);
+  if (!context.isSuperAdmin) {
+    if (!context.tenantOwner) return null;
 
-    if (!context?.business || !context?.businessType) {
-      return null;
+    query.tenantOwner = context.tenantOwner;
+
+    if (context.business) {
+      query.business = context.business;
     }
 
-    const productIds = await getAllowedProductIds(context);
-
-    query.business = context.business;
-    query.product = { $in: productIds };
+    if (context.businessType) {
+      query.businessType = context.businessType;
+    }
   }
 
   return ProductInventory.findOne(query);
+};
+
+// ======================================================
+// VALIDATE PRODUCT TENANT MATCH
+// ======================================================
+
+const validateProductTenant = (
+  productData,
+  tenantOwner,
+  business,
+  businessType
+) => {
+  if (!productData) return false;
+
+  if (
+    tenantOwner &&
+    String(productData.tenantOwner) !== String(tenantOwner)
+  ) {
+    return false;
+  }
+
+  if (
+    business &&
+    String(productData.business) !== String(business)
+  ) {
+    return false;
+  }
+
+  if (
+    businessType &&
+    String(productData.businessType) !== String(businessType)
+  ) {
+    return false;
+  }
+
+  return true;
 };
 
 // ======================================================
@@ -184,17 +287,16 @@ export const createProductInventory = async (req, res, next) => {
     } = req.body;
 
     if (!product || !isValidObjectId(product)) {
-      return errorResponse(
-        res,
-        400,
-        "Valid product ID is required."
-      );
+      return errorResponse(res, 400, "Valid product ID is required.");
     }
 
-    const productData = await getProductForUser(
-      req.user,
-      product
-    );
+    const tenant = await resolveTenant(req, false);
+
+    if (tenant.error) {
+      return errorResponse(res, 400, tenant.error);
+    }
+
+    const productData = await getProductForUser(req, product);
 
     if (!productData) {
       return errorResponse(
@@ -204,7 +306,43 @@ export const createProductInventory = async (req, res, next) => {
       );
     }
 
+    const tenantOwner = tenant.context.isSuperAdmin
+      ? productData.tenantOwner
+      : tenant.tenantOwner;
+
+    if (!tenantOwner) {
+      return errorResponse(
+        res,
+        400,
+        "Product is not associated with a tenant."
+      );
+    }
+
+    const validProductTenant = validateProductTenant(
+      productData,
+      tenantOwner,
+      productData.business,
+      productData.businessType
+    );
+
+    if (!validProductTenant) {
+      return errorResponse(
+        res,
+        403,
+        "Product does not belong to this tenant."
+      );
+    }
+
+    if (!productData.business || !productData.businessType) {
+      return errorResponse(
+        res,
+        400,
+        "Product is missing business or business type."
+      );
+    }
+
     const businessId = productData.business;
+    const businessTypeId = productData.businessType;
 
     const normalizedColor = normalizeVariant(color);
     const normalizedSize = normalizeVariant(size);
@@ -220,14 +358,9 @@ export const createProductInventory = async (req, res, next) => {
       );
     }
 
-    const parsedQuantity =
-      parseNumber(quantity, "Quantity") ?? 0;
-
-    const parsedMinStock =
-      parseNumber(minStock, "Minimum stock") ?? 0;
-
-    const parsedMaxStock =
-      parseNumber(maxStock, "Maximum stock");
+    const parsedQuantity = parseNumber(quantity, "Quantity") ?? 0;
+    const parsedMinStock = parseNumber(minStock, "Minimum stock") ?? 0;
+    const parsedMaxStock = parseNumber(maxStock, "Maximum stock");
 
     const parsedPurchasePrice =
       purchasePrice !== undefined
@@ -239,18 +372,11 @@ export const createProductInventory = async (req, res, next) => {
         ? parseNumber(salePrice, "Sale price")
         : productData.salePrice ?? 0;
 
-    const parsedDiscount =
-      parseNumber(discount, "Discount") ?? 0;
-
-    const parsedTax =
-      parseNumber(tax, "Tax") ?? 0;
+    const parsedDiscount = parseNumber(discount, "Discount") ?? 0;
+    const parsedTax = parseNumber(tax, "Tax") ?? 0;
 
     if (parsedQuantity < 0) {
-      return errorResponse(
-        res,
-        400,
-        "Quantity cannot be negative."
-      );
+      return errorResponse(res, 400, "Quantity cannot be negative.");
     }
 
     if (parsedMinStock < 0) {
@@ -273,21 +399,11 @@ export const createProductInventory = async (req, res, next) => {
       );
     }
 
-    if (
-      parsedPurchasePrice < 0 ||
-      parsedSalePrice < 0
-    ) {
-      return errorResponse(
-        res,
-        400,
-        "Prices cannot be negative."
-      );
+    if (parsedPurchasePrice < 0 || parsedSalePrice < 0) {
+      return errorResponse(res, 400, "Prices cannot be negative.");
     }
 
-    if (
-      parsedDiscount < 0 ||
-      parsedDiscount > 100
-    ) {
+    if (parsedDiscount < 0 || parsedDiscount > 100) {
       return errorResponse(
         res,
         400,
@@ -296,15 +412,11 @@ export const createProductInventory = async (req, res, next) => {
     }
 
     if (parsedTax < 0) {
-      return errorResponse(
-        res,
-        400,
-        "Tax cannot be negative."
-      );
+      return errorResponse(res, 400, "Tax cannot be negative.");
     }
 
     const duplicate = await ProductInventory.findOne({
-      business: businessId,
+      tenantOwner,
       product: productData._id,
       color: normalizedColor,
       size: normalizedSize,
@@ -315,12 +427,14 @@ export const createProductInventory = async (req, res, next) => {
       return errorResponse(
         res,
         409,
-        "This product inventory variant already exists."
+        "This product inventory variant already exists in this tenant."
       );
     }
 
     const inventory = await ProductInventory.create({
+      tenantOwner,
       business: businessId,
+      businessType: businessTypeId,
       product: productData._id,
       color: normalizedColor,
       size: normalizedSize,
@@ -346,11 +460,13 @@ export const createProductInventory = async (req, res, next) => {
       result
     );
   } catch (error) {
+    console.error("Create Product Inventory Error:", error);
+
     if (error.code === 11000) {
       return errorResponse(
         res,
         409,
-        "This product inventory variant already exists."
+        "This product inventory variant already exists in this tenant."
       );
     }
 
@@ -362,11 +478,7 @@ export const createProductInventory = async (req, res, next) => {
 // GET ALL INVENTORY
 // ======================================================
 
-export const getAllProductInventory = async (
-  req,
-  res,
-  next
-) => {
+export const getAllProductInventory = async (req, res, next) => {
   try {
     const {
       product,
@@ -378,99 +490,53 @@ export const getAllProductInventory = async (
       search,
     } = req.query;
 
-    const page = Math.max(
-      Number(req.query.page) || 1,
-      1
-    );
+    const page = Math.max(Number(req.query.page) || 1, 1);
+    const limit = Math.min(Math.max(Number(req.query.limit) || 20, 1), 100);
 
-    const limit = Math.min(
-      Math.max(Number(req.query.limit) || 20, 1),
-      100
-    );
+    const tenant = await resolveTenant(req, false);
+
+    if (tenant.error) {
+      return errorResponse(res, 400, tenant.error);
+    }
 
     const query = {
       isActive: true,
     };
 
-    let allowedProductQuery = {};
-
-    // --------------------------------------------------
-    // SUPER ADMIN
-    // --------------------------------------------------
-
-    if (isSuperAdmin(req.user)) {
-      if (business) {
-        if (!isValidObjectId(business)) {
-          return errorResponse(
-            res,
-            400,
-            "Invalid business ID."
-          );
-        }
-
-        query.business = business;
-        allowedProductQuery.business = business;
-      }
-
-      if (businessType) {
-        if (!isValidObjectId(businessType)) {
-          return errorResponse(
-            res,
-            400,
-            "Invalid business type ID."
-          );
-        }
-
-        allowedProductQuery.businessType = businessType;
-      }
-    } else {
-      // ------------------------------------------------
-      // ADMIN / MANAGER
-      // ------------------------------------------------
-
-      const context = await getEffectiveContext(req.user);
-
-      if (!context?.business) {
-        return errorResponse(
-          res,
-          403,
-          "Business context not found."
-        );
-      }
-
-      if (!context?.businessType) {
-        return errorResponse(
-          res,
-          403,
-          "Business type context not found."
-        );
-      }
-
-      query.business = context.business;
-
-      allowedProductQuery = {
-        business: context.business,
-        businessType: context.businessType,
-      };
+    if (!tenant.context.isSuperAdmin) {
+      query.tenantOwner = tenant.tenantOwner;
+      query.business = tenant.business;
+      query.businessType = tenant.businessType;
+    } else if (tenant.tenantOwner) {
+      query.tenantOwner = tenant.tenantOwner;
+      if (tenant.business) query.business = tenant.business;
+      if (tenant.businessType) query.businessType = tenant.businessType;
     }
 
-    // --------------------------------------------------
-    // PRODUCT FILTER
-    // --------------------------------------------------
+    if (tenant.context.isSuperAdmin && business) {
+      if (!isValidObjectId(business)) {
+        return errorResponse(res, 400, "Invalid business ID.");
+      }
+      query.business = business;
+    }
+
+    if (businessType) {
+      if (!isValidObjectId(businessType)) {
+        return errorResponse(res, 400, "Invalid business type ID.");
+      }
+      query.businessType = businessType;
+    }
 
     if (product) {
       if (!isValidObjectId(product)) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid product ID."
-        );
+        return errorResponse(res, 400, "Invalid product ID.");
       }
 
-      const productQuery = {
-        _id: product,
-        ...allowedProductQuery,
-      };
+      const productQuery = { _id: product };
+
+      if (query.tenantOwner) productQuery.tenantOwner = query.tenantOwner;
+      if (query.business) productQuery.business = query.business;
+      if (query.businessType) productQuery.businessType = query.businessType;
 
       const productData = await Product.findOne(productQuery)
         .select("_id")
@@ -485,19 +551,36 @@ export const getAllProductInventory = async (
       }
 
       query.product = productData._id;
-    } else if (
-      Object.keys(allowedProductQuery).length
-    ) {
-      const productIds = await getAllowedProductIds(
-        {
-          business:
-            allowedProductQuery.business,
-          businessType:
-            allowedProductQuery.businessType,
-        }
+    }
+
+    if (search?.trim()) {
+      const searchValue = String(search).trim();
+      const escapedSearch = searchValue.replace(
+        /[.*+?^${}()|[\]\\]/g,
+        "\\$&"
+      );
+      const regex = new RegExp(escapedSearch, "i");
+
+      const searchProductQuery = {
+        $or: [{ name: regex }, { sku: regex }, { barcode: regex }],
+      };
+
+      if (query.tenantOwner) {
+        searchProductQuery.tenantOwner = query.tenantOwner;
+      }
+      if (query.business) {
+        searchProductQuery.business = query.business;
+      }
+      if (query.businessType) {
+        searchProductQuery.businessType = query.businessType;
+      }
+
+      const searchProductIds = await Product.distinct(
+        "_id",
+        searchProductQuery
       );
 
-      if (!productIds.length) {
+      if (!searchProductIds.length) {
         return successResponse(
           res,
           200,
@@ -514,82 +597,8 @@ export const getAllProductInventory = async (
         );
       }
 
-      query.product = {
-        $in: productIds,
-      };
+      query.product = { $in: searchProductIds };
     }
-
-    // --------------------------------------------------
-    // SEARCH
-    // --------------------------------------------------
-
-    if (search) {
-      const searchValue = String(search).trim();
-
-      if (searchValue) {
-        const regex = new RegExp(
-          searchValue.replace(
-            /[.*+?^${}()|[\]\\]/g,
-            "\\$&"
-          ),
-          "i"
-        );
-
-        const searchProductQuery = {
-          ...allowedProductQuery,
-          $or: [
-            { name: regex },
-            { sku: regex },
-            { barcode: regex },
-          ],
-        };
-
-        const searchProductIds =
-          await Product.distinct(
-            "_id",
-            searchProductQuery
-          );
-
-        if (!searchProductIds.length) {
-          return successResponse(
-            res,
-            200,
-            "Product inventory fetched successfully.",
-            {
-              inventory: [],
-              pagination: {
-                page,
-                limit,
-                total: 0,
-                totalPages: 0,
-              },
-            }
-          );
-        }
-
-        if (query.product?.$in) {
-          const currentIds = new Set(
-            query.product.$in.map((id) =>
-              String(id)
-            )
-          );
-
-          query.product = {
-            $in: searchProductIds.filter((id) =>
-              currentIds.has(String(id))
-            ),
-          };
-        } else {
-          query.product = {
-            $in: searchProductIds,
-          };
-        }
-      }
-    }
-
-    // --------------------------------------------------
-    // OTHER FILTERS
-    // --------------------------------------------------
 
     if (color) {
       query.color = String(color).trim();
@@ -604,27 +613,24 @@ export const getAllProductInventory = async (
     }
 
     if (stockStatus === "in-stock") {
-      query.quantity = {
-        $gt: 0,
-      };
+      query.quantity = { $gt: 0 };
     }
 
     if (stockStatus === "low-stock") {
-      query.quantity = {
-        $gt: 0,
-      };
-
+      query.quantity = { $gt: 0 };
       query.$expr = {
         $lte: ["$quantity", "$minStock"],
       };
     }
 
-    // --------------------------------------------------
-    // FETCH
-    // --------------------------------------------------
+    if (
+      stockStatus &&
+      !["out-of-stock", "in-stock", "low-stock"].includes(stockStatus)
+    ) {
+      return errorResponse(res, 400, "Invalid stock status.");
+    }
 
-    const total =
-      await ProductInventory.countDocuments(query);
+    const total = await ProductInventory.countDocuments(query);
 
     const inventory = await populateInventory(
       ProductInventory.find(query)
@@ -648,6 +654,7 @@ export const getAllProductInventory = async (
       }
     );
   } catch (error) {
+    console.error("Get Product Inventory Error:", error);
     next(error);
   }
 };
@@ -656,26 +663,15 @@ export const getAllProductInventory = async (
 // GET INVENTORY BY PRODUCT
 // ======================================================
 
-export const getProductInventory = async (
-  req,
-  res,
-  next
-) => {
+export const getProductInventory = async (req, res, next) => {
   try {
     const { productId } = req.params;
 
     if (!isValidObjectId(productId)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid product ID."
-      );
+      return errorResponse(res, 400, "Invalid product ID.");
     }
 
-    const productData = await getProductForUser(
-      req.user,
-      productId
-    );
+    const productData = await getProductForUser(req, productId);
 
     if (!productData) {
       return errorResponse(
@@ -685,12 +681,16 @@ export const getProductInventory = async (
       );
     }
 
+    const query = {
+      tenantOwner: productData.tenantOwner,
+      business: productData.business,
+      businessType: productData.businessType,
+      product: productData._id,
+      isActive: true,
+    };
+
     const inventory = await populateInventory(
-      ProductInventory.find({
-        business: productData.business,
-        product: productData._id,
-        isActive: true,
-      }).sort({ createdAt: -1 })
+      ProductInventory.find(query).sort({ createdAt: -1 })
     ).lean();
 
     return successResponse(
@@ -700,6 +700,7 @@ export const getProductInventory = async (
       inventory
     );
   } catch (error) {
+    console.error("Get Product Inventory Error:", error);
     next(error);
   }
 };
@@ -708,33 +709,41 @@ export const getProductInventory = async (
 // GET INVENTORY BY ID
 // ======================================================
 
-export const getProductInventoryById = async (
-  req,
-  res,
-  next
-) => {
+export const getProductInventoryById = async (req, res, next) => {
   try {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid inventory ID."
-      );
+      return errorResponse(res, 400, "Invalid inventory ID.");
     }
 
-    const inventory = await getInventoryForUser(
-      req.user,
-      id,
-      true
-    );
+    const inventory = await getInventoryForUser(req, id, true);
 
     if (!inventory) {
       return errorResponse(
         res,
         404,
         "Inventory not found or you do not have access to it."
+      );
+    }
+
+    const productData = await getProductForUser(req, inventory.product);
+
+    if (!productData) {
+      return errorResponse(
+        res,
+        404,
+        "Related product not found or you do not have access to it."
+      );
+    }
+
+    if (
+      String(productData.tenantOwner) !== String(inventory.tenantOwner)
+    ) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory does not belong to the product tenant."
       );
     }
 
@@ -749,6 +758,7 @@ export const getProductInventoryById = async (
       result
     );
   } catch (error) {
+    console.error("Get Product Inventory By ID Error:", error);
     next(error);
   }
 };
@@ -757,27 +767,15 @@ export const getProductInventoryById = async (
 // UPDATE INVENTORY
 // ======================================================
 
-export const updateProductInventory = async (
-  req,
-  res,
-  next
-) => {
+export const updateProductInventory = async (req, res, next) => {
   try {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid inventory ID."
-      );
+      return errorResponse(res, 400, "Invalid inventory ID.");
     }
 
-    const inventory = await getInventoryForUser(
-      req.user,
-      id,
-      true
-    );
+    const inventory = await getInventoryForUser(req, id, true);
 
     if (!inventory) {
       return errorResponse(
@@ -787,10 +785,7 @@ export const updateProductInventory = async (
       );
     }
 
-    const productData = await getProductForUser(
-      req.user,
-      inventory.product
-    );
+    const productData = await getProductForUser(req, inventory.product);
 
     if (!productData) {
       return errorResponse(
@@ -798,6 +793,40 @@ export const updateProductInventory = async (
         404,
         "Product not found or you do not have access to it."
       );
+    }
+
+    if (
+      String(inventory.tenantOwner) !== String(productData.tenantOwner)
+    ) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory does not belong to the product tenant."
+      );
+    }
+
+    if (String(inventory.business) !== String(productData.business)) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory business does not match the product business."
+      );
+    }
+
+    if (
+      inventory.businessType &&
+      String(inventory.businessType) !== String(productData.businessType)
+    ) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory business type does not match the product business type."
+      );
+    }
+
+    // Keep businessType in sync with product if missing on older docs
+    if (!inventory.businessType && productData.businessType) {
+      inventory.businessType = productData.businessType;
     }
 
     const color =
@@ -810,10 +839,7 @@ export const updateProductInventory = async (
         ? normalizeVariant(req.body.size)
         : inventory.size;
 
-    if (
-      !productData.hasVariants &&
-      (color || size)
-    ) {
+    if (!productData.hasVariants && (color || size)) {
       return errorResponse(
         res,
         400,
@@ -822,10 +848,8 @@ export const updateProductInventory = async (
     }
 
     const duplicate = await ProductInventory.findOne({
-      _id: {
-        $ne: inventory._id,
-      },
-      business: inventory.business,
+      _id: { $ne: inventory._id },
+      tenantOwner: inventory.tenantOwner,
       product: inventory.product,
       color,
       size,
@@ -836,33 +860,20 @@ export const updateProductInventory = async (
       return errorResponse(
         res,
         409,
-        "Another active inventory variant already exists."
+        "Another active inventory variant already exists in this tenant."
       );
     }
 
     if (req.body.quantity !== undefined) {
-      const value = parseNumber(
-        req.body.quantity,
-        "Quantity"
-      );
-
+      const value = parseNumber(req.body.quantity, "Quantity");
       if (value < 0) {
-        return errorResponse(
-          res,
-          400,
-          "Quantity cannot be negative."
-        );
+        return errorResponse(res, 400, "Quantity cannot be negative.");
       }
-
       inventory.quantity = value;
     }
 
     if (req.body.minStock !== undefined) {
-      const value = parseNumber(
-        req.body.minStock,
-        "Minimum stock"
-      );
-
+      const value = parseNumber(req.body.minStock, "Minimum stock");
       if (value < 0) {
         return errorResponse(
           res,
@@ -870,28 +881,18 @@ export const updateProductInventory = async (
           "Minimum stock cannot be negative."
         );
       }
-
       inventory.minStock = value;
     }
 
     if (req.body.maxStock !== undefined) {
-      const value = parseNumber(
-        req.body.maxStock,
-        "Maximum stock"
-      );
-
-      if (
-        value !== null &&
-        value !== undefined &&
-        value < 0
-      ) {
+      const value = parseNumber(req.body.maxStock, "Maximum stock");
+      if (value !== null && value !== undefined && value < 0) {
         return errorResponse(
           res,
           400,
           "Maximum stock cannot be negative."
         );
       }
-
       inventory.maxStock = value;
     }
 
@@ -908,11 +909,7 @@ export const updateProductInventory = async (
     }
 
     if (req.body.purchasePrice !== undefined) {
-      const value = parseNumber(
-        req.body.purchasePrice,
-        "Purchase price"
-      );
-
+      const value = parseNumber(req.body.purchasePrice, "Purchase price");
       if (value < 0) {
         return errorResponse(
           res,
@@ -920,16 +917,11 @@ export const updateProductInventory = async (
           "Purchase price cannot be negative."
         );
       }
-
       inventory.purchasePrice = value;
     }
 
     if (req.body.salePrice !== undefined) {
-      const value = parseNumber(
-        req.body.salePrice,
-        "Sale price"
-      );
-
+      const value = parseNumber(req.body.salePrice, "Sale price");
       if (value < 0) {
         return errorResponse(
           res,
@@ -937,16 +929,11 @@ export const updateProductInventory = async (
           "Sale price cannot be negative."
         );
       }
-
       inventory.salePrice = value;
     }
 
     if (req.body.discount !== undefined) {
-      const value = parseNumber(
-        req.body.discount,
-        "Discount"
-      );
-
+      const value = parseNumber(req.body.discount, "Discount");
       if (value < 0 || value > 100) {
         return errorResponse(
           res,
@@ -954,40 +941,22 @@ export const updateProductInventory = async (
           "Discount must be between 0 and 100."
         );
       }
-
       inventory.discount = value;
     }
 
     if (req.body.tax !== undefined) {
-      const value = parseNumber(
-        req.body.tax,
-        "Tax"
-      );
-
+      const value = parseNumber(req.body.tax, "Tax");
       if (value < 0) {
-        return errorResponse(
-          res,
-          400,
-          "Tax cannot be negative."
-        );
+        return errorResponse(res, 400, "Tax cannot be negative.");
       }
-
       inventory.tax = value;
     }
 
     if (req.body.isActive !== undefined) {
-      const value = parseBoolean(
-        req.body.isActive
-      );
-
+      const value = parseBoolean(req.body.isActive);
       if (value === undefined) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid isActive value."
-        );
+        return errorResponse(res, 400, "Invalid isActive value.");
       }
-
       inventory.isActive = value;
     }
 
@@ -997,10 +966,9 @@ export const updateProductInventory = async (
 
     await inventory.save();
 
-    const updatedInventory =
-      await populateInventory(
-        ProductInventory.findById(inventory._id)
-      ).lean();
+    const updatedInventory = await populateInventory(
+      ProductInventory.findById(inventory._id)
+    ).lean();
 
     return successResponse(
       res,
@@ -1009,11 +977,13 @@ export const updateProductInventory = async (
       updatedInventory
     );
   } catch (error) {
+    console.error("Update Product Inventory Error:", error);
+
     if (error.code === 11000) {
       return errorResponse(
         res,
         409,
-        "Another active inventory variant already exists."
+        "Another active inventory variant already exists in this tenant."
       );
     }
 
@@ -1025,35 +995,18 @@ export const updateProductInventory = async (
 // UPDATE STOCK
 // ======================================================
 
-export const updateProductStock = async (
-  req,
-  res,
-  next
-) => {
+export const updateProductStock = async (req, res, next) => {
   try {
     const { id } = req.params;
-    const {
-      quantity,
-      operation = "set",
-    } = req.body;
+    const { quantity, operation = "set" } = req.body;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid inventory ID."
-      );
+      return errorResponse(res, 400, "Invalid inventory ID.");
     }
 
-    const parsedQuantity = parseNumber(
-      quantity,
-      "Quantity"
-    );
+    const parsedQuantity = parseNumber(quantity, "Quantity");
 
-    if (
-      parsedQuantity === undefined ||
-      parsedQuantity < 0
-    ) {
+    if (parsedQuantity === undefined || parsedQuantity < 0) {
       return errorResponse(
         res,
         400,
@@ -1061,11 +1014,7 @@ export const updateProductStock = async (
       );
     }
 
-    if (
-      !["add", "subtract", "set"].includes(
-        operation
-      )
-    ) {
+    if (!["add", "subtract", "set"].includes(operation)) {
       return errorResponse(
         res,
         400,
@@ -1073,11 +1022,7 @@ export const updateProductStock = async (
       );
     }
 
-    const inventory = await getInventoryForUser(
-      req.user,
-      id,
-      true
-    );
+    const inventory = await getInventoryForUser(req, id, true);
 
     if (!inventory) {
       return errorResponse(
@@ -1087,19 +1032,34 @@ export const updateProductStock = async (
       );
     }
 
+    const productData = await getProductForUser(req, inventory.product);
+
+    if (!productData) {
+      return errorResponse(
+        res,
+        404,
+        "Product not found or you do not have access to it."
+      );
+    }
+
+    if (
+      String(inventory.tenantOwner) !== String(productData.tenantOwner)
+    ) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory does not belong to the product tenant."
+      );
+    }
+
     if (operation === "add") {
       inventory.quantity += parsedQuantity;
     }
 
     if (operation === "subtract") {
       if (parsedQuantity > inventory.quantity) {
-        return errorResponse(
-          res,
-          400,
-          "Insufficient stock."
-        );
+        return errorResponse(res, 400, "Insufficient stock.");
       }
-
       inventory.quantity -= parsedQuantity;
     }
 
@@ -1108,13 +1068,11 @@ export const updateProductStock = async (
     }
 
     inventory.updatedBy = req.user._id;
-
     await inventory.save();
 
-    const updatedInventory =
-      await populateInventory(
-        ProductInventory.findById(inventory._id)
-      ).lean();
+    const updatedInventory = await populateInventory(
+      ProductInventory.findById(inventory._id)
+    ).lean();
 
     return successResponse(
       res,
@@ -1123,6 +1081,7 @@ export const updateProductStock = async (
       updatedInventory
     );
   } catch (error) {
+    console.error("Update Product Stock Error:", error);
     next(error);
   }
 };
@@ -1131,27 +1090,15 @@ export const updateProductStock = async (
 // DELETE INVENTORY
 // ======================================================
 
-export const deleteProductInventory = async (
-  req,
-  res,
-  next
-) => {
+export const deleteProductInventory = async (req, res, next) => {
   try {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid inventory ID."
-      );
+      return errorResponse(res, 400, "Invalid inventory ID.");
     }
 
-    const inventory = await getInventoryForUser(
-      req.user,
-      id,
-      true
-    );
+    const inventory = await getInventoryForUser(req, id, true);
 
     if (!inventory) {
       return errorResponse(
@@ -1163,7 +1110,6 @@ export const deleteProductInventory = async (
 
     inventory.isActive = false;
     inventory.updatedBy = req.user._id;
-
     await inventory.save();
 
     return successResponse(
@@ -1172,6 +1118,7 @@ export const deleteProductInventory = async (
       "Product inventory deleted successfully."
     );
   } catch (error) {
+    console.error("Delete Product Inventory Error:", error);
     next(error);
   }
 };
@@ -1180,27 +1127,15 @@ export const deleteProductInventory = async (
 // RESTORE INVENTORY
 // ======================================================
 
-export const restoreProductInventory = async (
-  req,
-  res,
-  next
-) => {
+export const restoreProductInventory = async (req, res, next) => {
   try {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid inventory ID."
-      );
+      return errorResponse(res, 400, "Invalid inventory ID.");
     }
 
-    const inventory = await getInventoryForUser(
-      req.user,
-      id,
-      false
-    );
+    const inventory = await getInventoryForUser(req, id, false);
 
     if (!inventory) {
       return errorResponse(
@@ -1210,10 +1145,7 @@ export const restoreProductInventory = async (
       );
     }
 
-    const productData = await getProductForUser(
-      req.user,
-      inventory.product
-    );
+    const productData = await getProductForUser(req, inventory.product);
 
     if (!productData) {
       return errorResponse(
@@ -1223,11 +1155,31 @@ export const restoreProductInventory = async (
       );
     }
 
+    if (
+      String(inventory.tenantOwner) !== String(productData.tenantOwner)
+    ) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory does not belong to the product tenant."
+      );
+    }
+
+    if (String(inventory.business) !== String(productData.business)) {
+      return errorResponse(
+        res,
+        403,
+        "Inventory business does not match the product business."
+      );
+    }
+
+    if (!inventory.businessType && productData.businessType) {
+      inventory.businessType = productData.businessType;
+    }
+
     const duplicate = await ProductInventory.findOne({
-      _id: {
-        $ne: inventory._id,
-      },
-      business: inventory.business,
+      _id: { $ne: inventory._id },
+      tenantOwner: inventory.tenantOwner,
       product: inventory.product,
       color: inventory.color,
       size: inventory.size,
@@ -1238,19 +1190,17 @@ export const restoreProductInventory = async (
       return errorResponse(
         res,
         409,
-        "An active inventory variant with the same color and size already exists."
+        "An active inventory variant with the same color and size already exists in this tenant."
       );
     }
 
     inventory.isActive = true;
     inventory.updatedBy = req.user._id;
-
     await inventory.save();
 
-    const restoredInventory =
-      await populateInventory(
-        ProductInventory.findById(inventory._id)
-      ).lean();
+    const restoredInventory = await populateInventory(
+      ProductInventory.findById(inventory._id)
+    ).lean();
 
     return successResponse(
       res,
@@ -1259,11 +1209,13 @@ export const restoreProductInventory = async (
       restoredInventory
     );
   } catch (error) {
+    console.error("Restore Product Inventory Error:", error);
+
     if (error.code === 11000) {
       return errorResponse(
         res,
         409,
-        "An active inventory variant with the same color and size already exists."
+        "An active inventory variant with the same color and size already exists in this tenant."
       );
     }
 

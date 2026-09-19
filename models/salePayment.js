@@ -2,17 +2,31 @@ import mongoose from "mongoose";
 
 const salePaymentSchema = new mongoose.Schema(
   {
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
-      required: [true, "Business is required."],
+      required: true,
+      index: true,
+    },
+
+    businessType: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "BusinessType",
+      required: true,
       index: true,
     },
 
     sale: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Sale",
-      required: [true, "Sale is required."],
+      required: true,
       index: true,
     },
 
@@ -25,25 +39,22 @@ const salePaymentSchema = new mongoose.Schema(
 
     paymentNumber: {
       type: String,
-      required: [true, "Payment number is required."],
+      required: true,
       trim: true,
-      uppercase: true,
     },
 
     amount: {
       type: Number,
-      required: [true, "Payment amount is required."],
-      min: [0, "Payment amount cannot be negative."],
+      required: true,
+      min: 0.01,
     },
 
     currency: {
       type: String,
-      required: [true, "Currency is required."],
+      required: true,
       uppercase: true,
       trim: true,
       default: "USD",
-      minlength: 3,
-      maxlength: 3,
     },
 
     paymentMethod: {
@@ -57,18 +68,18 @@ const salePaymentSchema = new mongoose.Schema(
         "credit",
         "other",
       ],
-      required: [true, "Payment method is required."],
+      required: true,
     },
 
     gateway: {
       type: String,
       enum: [
+        null,
         "paypal",
         "easypaisa",
         "jazzcash",
         "stripe",
         "other",
-        null,
       ],
       default: null,
     },
@@ -80,43 +91,40 @@ const salePaymentSchema = new mongoose.Schema(
         "completed",
         "failed",
         "cancelled",
-        "refunded",
       ],
       default: "pending",
       index: true,
     },
 
-    referenceNumber: {
-      type: String,
-      trim: true,
-      default: "",
-    },
-
     transactionId: {
       type: String,
       trim: true,
-      default: "",
-      index: true,
+      default: null,
+    },
+
+    referenceNumber: {
+      type: String,
+      trim: true,
+      default: null,
     },
 
     gatewayOrderId: {
       type: String,
       trim: true,
-      default: "",
+      default: null,
       index: true,
     },
 
     gatewayPaymentId: {
       type: String,
       trim: true,
-      default: "",
-      index: true,
+      default: null,
     },
 
     gatewayStatus: {
       type: String,
       trim: true,
-      default: "",
+      default: null,
     },
 
     gatewayResponse: {
@@ -132,7 +140,6 @@ const salePaymentSchema = new mongoose.Schema(
     notes: {
       type: String,
       trim: true,
-      maxlength: 1000,
       default: "",
     },
 
@@ -148,30 +155,52 @@ const salePaymentSchema = new mongoose.Schema(
       default: null,
     },
   },
-  { timestamps: true }
+  {
+    timestamps: true,
+  }
 );
 
 salePaymentSchema.index(
-  { business: 1, paymentNumber: 1 },
-  { unique: true }
+  {
+    tenantOwner: 1,
+    business: 1,
+    businessType: 1,
+    paymentNumber: 1,
+  },
+  {
+    unique: true,
+  }
 );
 
 salePaymentSchema.index({
+  tenantOwner: 1,
   business: 1,
+  businessType: 1,
   sale: 1,
+});
+
+salePaymentSchema.index({
+  tenantOwner: 1,
+  business: 1,
+  businessType: 1,
+  customer: 1,
+});
+
+salePaymentSchema.index({
+  tenantOwner: 1,
+  business: 1,
+  businessType: 1,
   status: 1,
 });
 
 salePaymentSchema.index({
-  business: 1,
+  gateway: 1,
   gatewayOrderId: 1,
 });
 
-salePaymentSchema.index({
-  business: 1,
-  gatewayPaymentId: 1,
-});
-
-const SalePayment = mongoose.model("SalePayment", salePaymentSchema);
+const SalePayment = mongoose.model(
+  "SalePayment",
+  salePaymentSchema
+);
 
 export default SalePayment;

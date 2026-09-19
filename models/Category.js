@@ -3,26 +3,65 @@ import mongoose from "mongoose";
 const categorySchema = new mongoose.Schema(
   {
     // ==========================================
-    // TENANT / BUSINESS
+    // TENANT OWNER
     // ==========================================
+    //
+    // This is the actual tenant isolation field.
+    //
+    // Admin A:
+    // tenantOwner = Admin A
+    //
+    // Admin B:
+    // tenantOwner = Admin B
+    //
+    // Even if both have the same:
+    // Business = Information Technology
+    // BusinessType = Mobiles
+    //
+    // their categories remain completely separate.
+    //
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
+
+    // ==========================================
+    // BUSINESS
+    // ==========================================
+    //
+    // Used for classification/reporting.
+    // NOT the tenant isolation field.
+    //
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
       required: true,
+      index: true,
     },
 
     // ==========================================
     // BUSINESS TYPE
     // ==========================================
+    //
+    // Example:
+    //
+    // Information Technology
+    //   ├── Mobiles
+    //   └── Laptops
+    //
     businessType: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "BusinessType",
-      default: null,
+      required: true,
+      index: true,
     },
 
     // ==========================================
     // CATEGORY INFORMATION
     // ==========================================
+
     name: {
       type: String,
       required: true,
@@ -47,6 +86,7 @@ const categorySchema = new mongoose.Schema(
     // ==========================================
     // CATEGORY IMAGE
     // ==========================================
+
     image: {
       url: {
         type: String,
@@ -67,18 +107,22 @@ const categorySchema = new mongoose.Schema(
     // ==========================================
     // STATUS
     // ==========================================
+
     isActive: {
       type: Boolean,
       default: true,
+      index: true,
     },
 
     // ==========================================
     // AUDIT
     // ==========================================
+
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
       required: true,
+      index: true,
     },
 
     updatedBy: {
@@ -92,31 +136,30 @@ const categorySchema = new mongoose.Schema(
   }
 );
 
-// ==========================================
-// UNIQUE CATEGORY PER BUSINESS + BUSINESS TYPE
-// ==========================================
+// ======================================================
+// UNIQUE CATEGORY PER TENANT + BUSINESS + BUSINESS TYPE
+// ======================================================
 //
-// Example:
+// Admin A:
+// IT + Mobiles + Accessories
 //
-// Information Technology
-//   ├── Mobiles
-//   │     ├── Smartphones
-//   │     └── Tablets
-//   │
-//   └── Laptops
-//         ├── Gaming
-//         └── Business
+// Admin B:
+// IT + Mobiles + Accessories
 //
-// "Accessories" can exist under both:
+// Both are allowed because tenantOwner is different.
 //
-// Mobiles → Accessories
-// Laptops → Accessories
+// But inside Admin A's tenant:
 //
-// But the same category cannot be duplicated
-// inside the same Business + BusinessType.
+// IT + Mobiles + Accessories
+// IT + Mobiles + Accessories
 //
+// duplicate is NOT allowed.
+//
+// ======================================================
+
 categorySchema.index(
   {
+    tenantOwner: 1,
     business: 1,
     businessType: 1,
     name: 1,
@@ -126,38 +169,42 @@ categorySchema.index(
   }
 );
 
-// ==========================================
-// BUSINESS + ACTIVE CATEGORIES
-// ==========================================
-//
-// Useful for Admin/Manager queries such as:
-//
-// {
-//   business,
-//   isActive: true
-// }
-//
-categorySchema.index({
-  business: 1,
-  isActive: 1,
-});
+// ======================================================
+// TENANT + ACTIVE CATEGORIES
+// ======================================================
 
-// ==========================================
-// BUSINESS TYPE + ACTIVE CATEGORIES
-// ==========================================
-//
-// Useful when filtering categories by
-// BusinessType.
-//
 categorySchema.index({
+  tenantOwner: 1,
+  business: 1,
   businessType: 1,
   isActive: 1,
 });
 
-// ==========================================
-// MODEL
-// ==========================================
+// ======================================================
+// TENANT + CATEGORY NAME
+// ======================================================
 
-const Category = mongoose.model("Category", categorySchema);
+categorySchema.index({
+  tenantOwner: 1,
+  name: 1,
+});
+
+// ======================================================
+// TENANT + CREATED BY
+// ======================================================
+
+categorySchema.index({
+  tenantOwner: 1,
+  createdBy: 1,
+});
+
+// ======================================================
+// MODEL
+// ======================================================
+
+const Category = mongoose.model(
+  "Category",
+  categorySchema
+);
 
 export default Category;

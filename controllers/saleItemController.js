@@ -1,77 +1,82 @@
-import mongoose from "mongoose";
-
 import SaleItem from "../models/SaleItem.js";
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
 import ProductInventory from "../models/ProductInventory.js";
-import Business from "../models/Business.js";
 
 import {
   errorResponse,
   successResponse,
 } from "../utils/apiResponse.js";
 
-const getUserRole = (req) => {
-  return req.user?.role?.slug || req.user?.role?.name || "";
-};
+import {
+  getTenantContext,
+  buildTenantBusinessQuery,
+  isValidObjectId,
+} from "../utils/tenantContext.js";
 
-const isSuperAdmin = (req) => {
-  return getUserRole(req) === "super-admin";
-};
+// =====================================================
+// HELPERS
+// =====================================================
 
-const isValidObjectId = (id) => {
-  return mongoose.Types.ObjectId.isValid(id);
-};
+const getScope = async (req) => {
+  const tenant = await getTenantContext(req);
 
-/*
- * Resolve business.
- *
- * Super Admin can provide business.
- * Admin / Manager always use their own business.
- */
-const getBusinessId = (req) => {
-  if (isSuperAdmin(req)) {
-    return req.body.business || req.query.business;
+  if (tenant.isSuperAdmin) {
+    const tenantOwner =
+      req.body.tenantOwner ||
+      req.query.tenantOwner;
+
+    const business =
+      req.body.business ||
+      req.query.business;
+
+    const businessType =
+      req.body.businessType ||
+      req.query.businessType;
+
+    if (
+      !tenantOwner ||
+      !business ||
+      !businessType ||
+      !isValidObjectId(tenantOwner) ||
+      !isValidObjectId(business) ||
+      !isValidObjectId(businessType)
+    ) {
+      return null;
+    }
+
+    return {
+      tenant,
+      query: {
+        tenantOwner,
+        business,
+        businessType,
+      },
+    };
   }
 
-  return req.user?.business?._id || req.user?.business;
+  return {
+    tenant,
+    query: buildTenantBusinessQuery(tenant),
+  };
 };
 
-/*
- * Validate business.
- */
-const validateBusiness = async (businessId) => {
-  if (!businessId || !isValidObjectId(businessId)) {
-    return null;
-  }
-
-  return Business.findOne({
-    _id: businessId,
-    isActive: true,
-  });
-};
-
-/*
- * Calculate line values.
- */
-const calculateLineValues = ({
+const calculateLine = ({
   quantity,
   salePrice,
   discount = 0,
   tax = 0,
 }) => {
   const lineSubtotal = quantity * salePrice;
-
   const discountAmount = Math.min(
     discount,
     lineSubtotal
   );
 
-  const afterDiscount =
-    lineSubtotal - discountAmount;
-
   const lineTotal =
-    afterDiscount + tax;
+    lineSubtotal -
+    discountAmount +
+    tax;
 
   return {
     lineSubtotal,
@@ -79,22 +84,113 @@ const calculateLineValues = ({
   };
 };
 
-/*
- * CREATE SALE ITEM
- */
-export const createSaleItem = async (req, res, next) => {
+const recalculateSale = async (
+  sale,
+  scope,
+  userId
+) => {
+  const items = await SaleItem.find({
+    sale: sale._id,
+    ...scope,
+  });
+
+  const subtotal = items.reduce(
+    (sum, item) => sum + item.lineSubtotal,
+    0
+  );
+
+  const discount = items.reduce(
+    (sum, item) => sum + item.discount,
+    0
+  );
+
+  const tax = items.reduce(
+    (sum, item) => sum + item.tax,
+    0
+  );
+
+  sale.subtotal = subtotal;
+  sale.discount = discount;
+  sale.tax = tax;
+
+  sale.totalAmount =
+    subtotal -
+    discount +
+    tax +
+    (sale.shippingCost || 0) +
+    (sale.otherCharges || 0);
+
+  sale.paidAmount = Math.min(
+    sale.paidAmount || 0,
+    sale.totalAmount
+  );
+
+  sale.dueAmount =
+    sale.totalAmount -
+    sale.paidAmount;
+
+  sale.paymentStatus =
+    sale.dueAmount <= 0
+      ? "paid"
+      : sale.paidAmount > 0
+        ? "partially_paid"
+        : "unpaid";
+
+  sale.updatedBy = userId;
+
+  await sale.save();
+};
+
+const getPopulatedItem = (id) =>
+  SaleItem.findById(id)
+    .populate("tenantOwner", "name email")
+    .populate("business", "name")
+    .populate(
+      "businessType",
+      "name"
+    )
+    .populate(
+      "sale",
+      "saleNumber saleDate status totalAmount"
+    )
+    .populate(
+      "product",
+      "name sku barcode"
+    )
+    .populate(
+      "productInventory",
+      "color size quantity salePrice"
+    )
+    .populate(
+      "createdBy",
+      "name email"
+    )
+    .populate(
+      "updatedBy",
+      "name email"
+    );
+
+// =====================================================
+// CREATE
+// =====================================================
+
+export const createSaleItem = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData = await getScope(req);
 
-    const business = await validateBusiness(businessId);
-
-    if (!business) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        "Valid active business is required."
+        "tenantOwner, business and businessType are required."
       );
     }
+
+    const { tenant, query: scope } = scopeData;
 
     const {
       sale,
@@ -103,52 +199,57 @@ export const createSaleItem = async (req, res, next) => {
       quantity,
     } = req.body;
 
-    /*
-     * Validate Sale
-     */
-    if (!isValidObjectId(sale)) {
+    if (
+      !isValidObjectId(sale) ||
+      !isValidObjectId(product) ||
+      !isValidObjectId(productInventory)
+    ) {
       return errorResponse(
         res,
         400,
-        "Invalid sale ID."
+        "Invalid sale, product or inventory ID."
+      );
+    }
+
+    if (!quantity || quantity <= 0) {
+      return errorResponse(
+        res,
+        400,
+        "Valid quantity is required."
       );
     }
 
     const saleDoc = await Sale.findOne({
       _id: sale,
-      business: businessId,
+      ...scope,
     });
 
     if (!saleDoc) {
       return errorResponse(
         res,
         404,
-        "Sale not found for this business."
+        "Sale not found."
       );
     }
 
-    /*
-     * Don't allow items to be added to
-     * cancelled/returned sales.
-     */
     if (
-      ["cancelled", "returned"].includes(
-        saleDoc.status
-      )
+      [
+        "completed",
+        "partially_returned",
+        "returned",
+        "cancelled",
+      ].includes(saleDoc.status)
     ) {
       return errorResponse(
         res,
         400,
-        "Sale cannot accept new items in its current status."
+        "Sale cannot accept new items."
       );
     }
 
-    /*
-     * Validate Product
-     */
     const productDoc = await Product.findOne({
       _id: product,
-      business: businessId,
+      ...scope,
       isActive: true,
     });
 
@@ -156,31 +257,26 @@ export const createSaleItem = async (req, res, next) => {
       return errorResponse(
         res,
         404,
-        "Product not found for this business."
+        "Product not found."
       );
     }
 
-    /*
-     * Validate Product Inventory
-     */
-    const inventory = await ProductInventory.findOne({
-      _id: productInventory,
-      business: businessId,
-      product: product,
-      isActive: true,
-    });
+    const inventory =
+      await ProductInventory.findOne({
+        _id: productInventory,
+        ...scope,
+        product,
+        isActive: true,
+      });
 
     if (!inventory) {
       return errorResponse(
         res,
         404,
-        "Product inventory variant not found for this business."
+        "Product inventory variant not found."
       );
     }
 
-    /*
-     * Make sure enough stock exists.
-     */
     if (quantity > inventory.quantity) {
       return errorResponse(
         res,
@@ -189,40 +285,39 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
-    /*
-     * Prevent duplicate inventory variant
-     * in the same sale.
-     */
-    const existingItem = await SaleItem.findOne({
-      sale: sale,
-      productInventory: productInventory,
+    const exists = await SaleItem.findOne({
+      sale,
+      productInventory,
+      ...scope,
     });
 
-    if (existingItem) {
+    if (exists) {
       return errorResponse(
         res,
         409,
-        "This product inventory already exists in the sale."
+        "This inventory variant already exists in the sale."
       );
     }
 
-    /*
-     * Use inventory sale price when frontend
-     * does not provide a price.
-     */
     const salePrice =
-      req.body.salePrice ?? inventory.salePrice;
+      req.body.salePrice ??
+      inventory.salePrice ??
+      0;
 
     const discount =
-      req.body.discount ?? inventory.discount ?? 0;
+      req.body.discount ??
+      inventory.discount ??
+      0;
 
     const tax =
-      req.body.tax ?? inventory.tax ?? 0;
+      req.body.tax ??
+      inventory.tax ??
+      0;
 
     const {
       lineSubtotal,
       lineTotal,
-    } = calculateLineValues({
+    } = calculateLine({
       quantity,
       salePrice,
       discount,
@@ -230,10 +325,10 @@ export const createSaleItem = async (req, res, next) => {
     });
 
     const saleItem = await SaleItem.create({
-      business: businessId,
-      sale: sale,
-      product: product,
-      productInventory: productInventory,
+      ...scope,
+      sale,
+      product,
+      productInventory,
       quantity,
       salePrice,
       discount,
@@ -243,161 +338,122 @@ export const createSaleItem = async (req, res, next) => {
       createdBy: req.user._id,
     });
 
-    /*
-     * Recalculate Sale totals.
-     */
-    const items = await SaleItem.find({
-      sale: sale,
-      business: businessId,
-    });
-
-    const subtotal = items.reduce(
-      (total, item) =>
-        total + item.lineSubtotal,
-      0
+    await recalculateSale(
+      saleDoc,
+      scope,
+      req.user._id
     );
-
-    const itemDiscount = items.reduce(
-      (total, item) =>
-        total + item.discount,
-      0
-    );
-
-    const itemTax = items.reduce(
-      (total, item) =>
-        total + item.tax,
-      0
-    );
-
-    saleDoc.subtotal = subtotal;
-    saleDoc.discount = itemDiscount;
-    saleDoc.tax = itemTax;
-
-    saleDoc.totalAmount =
-      subtotal -
-      itemDiscount +
-      itemTax +
-      saleDoc.shippingCost +
-      saleDoc.otherCharges;
-
-    saleDoc.paidAmount = Math.min(
-      saleDoc.paidAmount,
-      saleDoc.totalAmount
-    );
-
-    saleDoc.dueAmount =
-      saleDoc.totalAmount -
-      saleDoc.paidAmount;
-
-    if (saleDoc.dueAmount <= 0) {
-      saleDoc.paymentStatus = "paid";
-    } else if (saleDoc.paidAmount > 0) {
-      saleDoc.paymentStatus = "partially_paid";
-    } else {
-      saleDoc.paymentStatus = "unpaid";
-    }
-
-    saleDoc.updatedBy = req.user._id;
-
-    await saleDoc.save();
-
-    const populatedItem =
-      await SaleItem.findById(saleItem._id)
-        .populate("business", "name")
-        .populate(
-          "sale",
-          "saleNumber saleDate status totalAmount"
-        )
-        .populate(
-          "product",
-          "name sku barcode"
-        )
-        .populate(
-          "productInventory",
-          "color size quantity salePrice"
-        )
-        .populate(
-          "createdBy",
-          "name email"
-        );
 
     return successResponse(
       res,
       201,
       "Sale item created successfully.",
-      populatedItem
+      await getPopulatedItem(saleItem._id)
     );
   } catch (error) {
     next(error);
   }
 };
 
-/*
- * GET ALL SALE ITEMS
- */
+// =====================================================
+// GET ALL
+// =====================================================
+
 export const getAllSaleItems = async (
   req,
   res,
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData = await getScope(req);
 
-    const business = await validateBusiness(businessId);
-
-    if (!business) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        "Valid active business is required."
+        "tenantOwner, business and businessType are required."
       );
     }
+
+    const { query: scope } = scopeData;
 
     const {
       page = 1,
       limit = 20,
-      sale = "",
-      product = "",
-      productInventory = "",
+      sale,
+      product,
+      productInventory,
     } = req.query;
 
     const currentPage = Math.max(
-      Number(page),
+      Number(page) || 1,
       1
     );
 
     const currentLimit = Math.min(
-      Math.max(Number(limit), 1),
+      Math.max(Number(limit) || 20, 1),
       100
     );
+
+    const filter = {
+      ...scope,
+    };
+
+    if (sale) {
+      if (!isValidObjectId(sale)) {
+        return errorResponse(
+          res,
+          400,
+          "Invalid sale ID."
+        );
+      }
+
+      filter.sale = sale;
+    }
+
+    if (product) {
+      if (!isValidObjectId(product)) {
+        return errorResponse(
+          res,
+          400,
+          "Invalid product ID."
+        );
+      }
+
+      filter.product = product;
+    }
+
+    if (productInventory) {
+      if (!isValidObjectId(productInventory)) {
+        return errorResponse(
+          res,
+          400,
+          "Invalid product inventory ID."
+        );
+      }
+
+      filter.productInventory =
+        productInventory;
+    }
 
     const skip =
       (currentPage - 1) *
       currentLimit;
 
-    const filter = {
-      business: businessId,
-    };
-
-    if (sale) {
-      filter.sale = sale;
-    }
-
-    if (product) {
-      filter.product = product;
-    }
-
-    if (productInventory) {
-      filter.productInventory =
-        productInventory;
-    }
-
     const [items, total] =
       await Promise.all([
         SaleItem.find(filter)
           .populate(
+            "business",
+            "name"
+          )
+          .populate(
+            "businessType",
+            "name"
+          )
+          .populate(
             "sale",
-            "saleNumber saleDate status"
+            "saleNumber saleDate status totalAmount"
           )
           .populate(
             "product",
@@ -435,27 +491,27 @@ export const getAllSaleItems = async (
   }
 };
 
-/*
- * GET SALE ITEMS BY SALE
- */
+// =====================================================
+// GET BY SALE
+// =====================================================
+
 export const getSaleItemsBySale = async (
   req,
   res,
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData = await getScope(req);
 
-    const business = await validateBusiness(businessId);
-
-    if (!business) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        "Valid active business is required."
+        "tenantOwner, business and businessType are required."
       );
     }
 
+    const { query: scope } = scopeData;
     const { saleId } = req.params;
 
     if (!isValidObjectId(saleId)) {
@@ -468,7 +524,7 @@ export const getSaleItemsBySale = async (
 
     const sale = await Sale.findOne({
       _id: saleId,
-      business: businessId,
+      ...scope,
     });
 
     if (!sale) {
@@ -480,8 +536,8 @@ export const getSaleItemsBySale = async (
     }
 
     const items = await SaleItem.find({
-      business: businessId,
       sale: saleId,
+      ...scope,
     })
       .populate(
         "product",
@@ -504,27 +560,27 @@ export const getSaleItemsBySale = async (
   }
 };
 
-/*
- * GET SALE ITEM BY ID
- */
+// =====================================================
+// GET BY ID
+// =====================================================
+
 export const getSaleItemById = async (
   req,
   res,
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData = await getScope(req);
 
-    const business = await validateBusiness(businessId);
-
-    if (!business) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        "Valid active business is required."
+        "tenantOwner, business and businessType are required."
       );
     }
 
+    const { query: scope } = scopeData;
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
@@ -535,34 +591,44 @@ export const getSaleItemById = async (
       );
     }
 
-    const saleItem =
-      await SaleItem.findOne({
-        _id: id,
-        business: businessId,
-      })
-        .populate("business", "name")
-        .populate(
-          "sale",
-          "saleNumber saleDate status totalAmount"
-        )
-        .populate(
-          "product",
-          "name sku barcode"
-        )
-        .populate(
-          "productInventory",
-          "color size quantity salePrice"
-        )
-        .populate(
-          "createdBy",
-          "name email"
-        )
-        .populate(
-          "updatedBy",
-          "name email"
-        );
+    const item = await SaleItem.findOne({
+      _id: id,
+      ...scope,
+    })
+      .populate(
+        "tenantOwner",
+        "name email"
+      )
+      .populate(
+        "business",
+        "name"
+      )
+      .populate(
+        "businessType",
+        "name"
+      )
+      .populate(
+        "sale",
+        "saleNumber saleDate status totalAmount"
+      )
+      .populate(
+        "product",
+        "name sku barcode"
+      )
+      .populate(
+        "productInventory",
+        "color size quantity salePrice"
+      )
+      .populate(
+        "createdBy",
+        "name email"
+      )
+      .populate(
+        "updatedBy",
+        "name email"
+      );
 
-    if (!saleItem) {
+    if (!item) {
       return errorResponse(
         res,
         404,
@@ -574,34 +640,34 @@ export const getSaleItemById = async (
       res,
       200,
       "Sale item fetched successfully.",
-      saleItem
+      item
     );
   } catch (error) {
     next(error);
   }
 };
 
-/*
- * UPDATE SALE ITEM
- */
+// =====================================================
+// UPDATE
+// =====================================================
+
 export const updateSaleItem = async (
   req,
   res,
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData = await getScope(req);
 
-    const business = await validateBusiness(businessId);
-
-    if (!business) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        "Valid active business is required."
+        "tenantOwner, business and businessType are required."
       );
     }
 
+    const { query: scope } = scopeData;
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
@@ -615,7 +681,7 @@ export const updateSaleItem = async (
     const saleItem =
       await SaleItem.findOne({
         _id: id,
-        business: businessId,
+        ...scope,
       });
 
     if (!saleItem) {
@@ -628,7 +694,7 @@ export const updateSaleItem = async (
 
     const sale = await Sale.findOne({
       _id: saleItem.sale,
-      business: businessId,
+      ...scope,
     });
 
     if (!sale) {
@@ -639,9 +705,6 @@ export const updateSaleItem = async (
       );
     }
 
-    /*
-     * Completed sales should not be edited.
-     */
     if (
       [
         "completed",
@@ -653,28 +716,37 @@ export const updateSaleItem = async (
       return errorResponse(
         res,
         400,
-        "Sale items cannot be edited after the sale is finalized."
+        "Sale items cannot be edited after finalization."
       );
     }
+
+    const product =
+      req.body.product ||
+      saleItem.product;
+
+    const productInventory =
+      req.body.productInventory ||
+      saleItem.productInventory;
 
     const quantity =
       req.body.quantity ??
       saleItem.quantity;
 
-    const product =
-      req.body.product ??
-      saleItem.product;
+    if (
+      !isValidObjectId(product) ||
+      !isValidObjectId(productInventory) ||
+      quantity <= 0
+    ) {
+      return errorResponse(
+        res,
+        400,
+        "Invalid product, inventory or quantity."
+      );
+    }
 
-    const productInventory =
-      req.body.productInventory ??
-      saleItem.productInventory;
-
-    /*
-     * Validate product.
-     */
     const productDoc = await Product.findOne({
       _id: product,
-      business: businessId,
+      ...scope,
       isActive: true,
     });
 
@@ -682,18 +754,15 @@ export const updateSaleItem = async (
       return errorResponse(
         res,
         404,
-        "Product not found for this business."
+        "Product not found."
       );
     }
 
-    /*
-     * Validate inventory.
-     */
     const inventory =
       await ProductInventory.findOne({
         _id: productInventory,
-        business: businessId,
-        product: product,
+        ...scope,
+        product,
         isActive: true,
       });
 
@@ -705,10 +774,6 @@ export const updateSaleItem = async (
       );
     }
 
-    /*
-     * During draft sale editing, stock is not
-     * consumed yet.
-     */
     if (quantity > inventory.quantity) {
       return errorResponse(
         res,
@@ -717,51 +782,42 @@ export const updateSaleItem = async (
       );
     }
 
-    /*
-     * Check duplicate variant if changed.
-     */
-    if (
-      String(productInventory) !==
-      String(saleItem.productInventory)
-    ) {
-      const duplicate =
-        await SaleItem.findOne({
-          sale: saleItem.sale,
-          productInventory:
-            productInventory,
-          _id: { $ne: id },
-        });
+    const duplicate =
+      await SaleItem.findOne({
+        sale: sale._id,
+        productInventory,
+        ...scope,
+        _id: { $ne: id },
+      });
 
-      if (duplicate) {
-        return errorResponse(
-          res,
-          409,
-          "This product inventory already exists in the sale."
-        );
-      }
+    if (duplicate) {
+      return errorResponse(
+        res,
+        409,
+        "This inventory variant already exists in the sale."
+      );
     }
 
     const salePrice =
       req.body.salePrice ??
       saleItem.salePrice ??
-      inventory.salePrice;
+      inventory.salePrice ??
+      0;
 
     const discount =
       req.body.discount ??
       saleItem.discount ??
-      inventory.discount ??
       0;
 
     const tax =
       req.body.tax ??
       saleItem.tax ??
-      inventory.tax ??
       0;
 
     const {
       lineSubtotal,
       lineTotal,
-    } = calculateLineValues({
+    } = calculateLine({
       quantity,
       salePrice,
       discount,
@@ -782,112 +838,44 @@ export const updateSaleItem = async (
 
     await saleItem.save();
 
-    /*
-     * Recalculate Sale totals.
-     */
-    const items = await SaleItem.find({
-      sale: saleItem.sale,
-      business: businessId,
-    });
-
-    const subtotal = items.reduce(
-      (total, item) =>
-        total + item.lineSubtotal,
-      0
+    await recalculateSale(
+      sale,
+      scope,
+      req.user._id
     );
-
-    const itemDiscount = items.reduce(
-      (total, item) =>
-        total + item.discount,
-      0
-    );
-
-    const itemTax = items.reduce(
-      (total, item) =>
-        total + item.tax,
-      0
-    );
-
-    sale.subtotal = subtotal;
-    sale.discount = itemDiscount;
-    sale.tax = itemTax;
-
-    sale.totalAmount =
-      subtotal -
-      itemDiscount +
-      itemTax +
-      sale.shippingCost +
-      sale.otherCharges;
-
-    sale.paidAmount = Math.min(
-      sale.paidAmount,
-      sale.totalAmount
-    );
-
-    sale.dueAmount =
-      sale.totalAmount -
-      sale.paidAmount;
-
-    if (sale.dueAmount <= 0) {
-      sale.paymentStatus = "paid";
-    } else if (sale.paidAmount > 0) {
-      sale.paymentStatus =
-        "partially_paid";
-    } else {
-      sale.paymentStatus = "unpaid";
-    }
-
-    sale.updatedBy = req.user._id;
-
-    await sale.save();
-
-    const populatedItem =
-      await SaleItem.findById(saleItem._id)
-        .populate(
-          "sale",
-          "saleNumber saleDate status totalAmount"
-        )
-        .populate(
-          "product",
-          "name sku barcode"
-        )
-        .populate(
-          "productInventory",
-          "color size quantity salePrice"
-        );
 
     return successResponse(
       res,
       200,
       "Sale item updated successfully.",
-      populatedItem
+      await getPopulatedItem(saleItem._id)
     );
   } catch (error) {
     next(error);
   }
 };
 
-/*
- * DELETE SALE ITEM
- */
+// =====================================================
+// DELETE
+// =====================================================
+
 export const deleteSaleItem = async (
   req,
   res,
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
+    const scopeData = await getScope(req);
 
-    const business = await validateBusiness(businessId);
-
-    if (!business) {
+    if (!scopeData) {
       return errorResponse(
         res,
         400,
-        "Valid active business is required."
+        "tenantOwner, business and businessType are required."
       );
     }
 
+    const { query: scope } = scopeData;
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
@@ -901,7 +889,7 @@ export const deleteSaleItem = async (
     const saleItem =
       await SaleItem.findOne({
         _id: id,
-        business: businessId,
+        ...scope,
       });
 
     if (!saleItem) {
@@ -914,7 +902,7 @@ export const deleteSaleItem = async (
 
     const sale = await Sale.findOne({
       _id: saleItem.sale,
-      business: businessId,
+      ...scope,
     });
 
     if (!sale) {
@@ -936,73 +924,20 @@ export const deleteSaleItem = async (
       return errorResponse(
         res,
         400,
-        "Sale items cannot be deleted after the sale is finalized."
+        "Sale items cannot be deleted after finalization."
       );
     }
 
     await SaleItem.deleteOne({
       _id: id,
-      business: businessId,
+      ...scope,
     });
 
-    /*
-     * Recalculate Sale totals after deletion.
-     */
-    const items = await SaleItem.find({
-      sale: sale._id,
-      business: businessId,
-    });
-
-    const subtotal = items.reduce(
-      (total, item) =>
-        total + item.lineSubtotal,
-      0
+    await recalculateSale(
+      sale,
+      scope,
+      req.user._id
     );
-
-    const itemDiscount = items.reduce(
-      (total, item) =>
-        total + item.discount,
-      0
-    );
-
-    const itemTax = items.reduce(
-      (total, item) =>
-        total + item.tax,
-      0
-    );
-
-    sale.subtotal = subtotal;
-    sale.discount = itemDiscount;
-    sale.tax = itemTax;
-
-    sale.totalAmount =
-      subtotal -
-      itemDiscount +
-      itemTax +
-      sale.shippingCost +
-      sale.otherCharges;
-
-    sale.paidAmount = Math.min(
-      sale.paidAmount,
-      sale.totalAmount
-    );
-
-    sale.dueAmount =
-      sale.totalAmount -
-      sale.paidAmount;
-
-    if (sale.dueAmount <= 0) {
-      sale.paymentStatus = "paid";
-    } else if (sale.paidAmount > 0) {
-      sale.paymentStatus =
-        "partially_paid";
-    } else {
-      sale.paymentStatus = "unpaid";
-    }
-
-    sale.updatedBy = req.user._id;
-
-    await sale.save();
 
     return successResponse(
       res,

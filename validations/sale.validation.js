@@ -1,17 +1,42 @@
 import Joi from "joi";
 
+// ======================================================
+// OBJECT ID VALIDATION
+// ======================================================
+
 const objectId = Joi.string()
   .pattern(/^[0-9a-fA-F]{24}$/)
   .messages({
     "string.pattern.base": "Invalid ObjectId.",
   });
 
+// ======================================================
+// CREATE SALE VALIDATION
+// ======================================================
+
 const createSaleSchema = Joi.object({
+  // ----------------------------------------------------
+  // BUSINESS
+  // ----------------------------------------------------
+  //
+  // Optional because:
+  // - Super Admin may provide business
+  // - Admin / Manager context should be resolved
+  //   by the backend
+  //
   business: objectId.optional(),
+
+  // ----------------------------------------------------
+  // CUSTOMER
+  // ----------------------------------------------------
 
   customer: objectId
     .allow(null)
     .optional(),
+
+  // ----------------------------------------------------
+  // SALE INFORMATION
+  // ----------------------------------------------------
 
   saleNumber: Joi.string()
     .trim()
@@ -21,6 +46,10 @@ const createSaleSchema = Joi.object({
 
   saleDate: Joi.date()
     .optional(),
+
+  // ----------------------------------------------------
+  // SALE STATUS
+  // ----------------------------------------------------
 
   status: Joi.string()
     .valid(
@@ -33,6 +62,10 @@ const createSaleSchema = Joi.object({
     .optional()
     .default("draft"),
 
+  // ----------------------------------------------------
+  // PAYMENT STATUS
+  // ----------------------------------------------------
+
   paymentStatus: Joi.string()
     .valid(
       "unpaid",
@@ -41,6 +74,10 @@ const createSaleSchema = Joi.object({
       "refunded"
     )
     .optional(),
+
+  // ----------------------------------------------------
+  // AMOUNTS
+  // ----------------------------------------------------
 
   subtotal: Joi.number()
     .min(0)
@@ -87,6 +124,10 @@ const createSaleSchema = Joi.object({
     .min(0)
     .precision(2)
     .optional(),
+
+  // ----------------------------------------------------
+  // PAYMENT
+  // ----------------------------------------------------
 
   paymentMethod: Joi.string()
     .valid(
@@ -107,6 +148,10 @@ const createSaleSchema = Joi.object({
     .allow("")
     .optional(),
 
+  // ----------------------------------------------------
+  // NOTES
+  // ----------------------------------------------------
+
   notes: Joi.string()
     .trim()
     .max(1000)
@@ -115,12 +160,31 @@ const createSaleSchema = Joi.object({
 })
   .unknown(false);
 
+// ======================================================
+// UPDATE SALE VALIDATION
+// ======================================================
+
 const updateSaleSchema = Joi.object({
+  // ----------------------------------------------------
+  // BUSINESS
+  // ----------------------------------------------------
+  //
+  // Backend should verify/resolve this against the
+  // authenticated user's tenant context.
+  //
   business: objectId.optional(),
+
+  // ----------------------------------------------------
+  // CUSTOMER
+  // ----------------------------------------------------
 
   customer: objectId
     .allow(null)
     .optional(),
+
+  // ----------------------------------------------------
+  // SALE INFORMATION
+  // ----------------------------------------------------
 
   saleNumber: Joi.string()
     .trim()
@@ -130,6 +194,10 @@ const updateSaleSchema = Joi.object({
 
   saleDate: Joi.date()
     .optional(),
+
+  // ----------------------------------------------------
+  // SALE STATUS
+  // ----------------------------------------------------
 
   status: Joi.string()
     .valid(
@@ -141,6 +209,10 @@ const updateSaleSchema = Joi.object({
     )
     .optional(),
 
+  // ----------------------------------------------------
+  // PAYMENT STATUS
+  // ----------------------------------------------------
+
   paymentStatus: Joi.string()
     .valid(
       "unpaid",
@@ -149,6 +221,10 @@ const updateSaleSchema = Joi.object({
       "refunded"
     )
     .optional(),
+
+  // ----------------------------------------------------
+  // AMOUNTS
+  // ----------------------------------------------------
 
   subtotal: Joi.number()
     .min(0)
@@ -190,6 +266,10 @@ const updateSaleSchema = Joi.object({
     .precision(2)
     .optional(),
 
+  // ----------------------------------------------------
+  // PAYMENT
+  // ----------------------------------------------------
+
   paymentMethod: Joi.string()
     .valid(
       "cash",
@@ -208,6 +288,10 @@ const updateSaleSchema = Joi.object({
     .allow("")
     .optional(),
 
+  // ----------------------------------------------------
+  // NOTES
+  // ----------------------------------------------------
+
   notes: Joi.string()
     .trim()
     .max(1000)
@@ -216,6 +300,10 @@ const updateSaleSchema = Joi.object({
 })
   .min(1)
   .unknown(false);
+
+// ======================================================
+// EXPORTS
+// ======================================================
 
 export {
   createSaleSchema,

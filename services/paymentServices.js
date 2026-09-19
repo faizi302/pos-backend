@@ -25,10 +25,32 @@ const calculateSalePaymentStatus = ({
   return "paid";
 };
 
-const updateSalePaymentTotals = async (saleId, session = null) => {
+const buildTenantQuery = ({
+  tenantOwner,
+  business,
+  businessType,
+  isSuperAdmin = false,
+}) => {
+  if (isSuperAdmin) {
+    return {};
+  }
+
+  return {
+    tenantOwner,
+    business,
+    businessType,
+  };
+};
+
+const updateSalePaymentTotals = async (
+  saleId,
+  scope,
+  session = null
+) => {
   const paymentQuery = SalePayment.find({
     sale: saleId,
     status: "completed",
+    ...buildTenantQuery(scope),
   });
 
   if (session) {
@@ -38,11 +60,15 @@ const updateSalePaymentTotals = async (saleId, session = null) => {
   const payments = await paymentQuery;
 
   const paidAmount = payments.reduce(
-    (total, payment) => total + Number(payment.amount || 0),
+    (total, payment) =>
+      total + Number(payment.amount || 0),
     0
   );
 
-  const saleQuery = Sale.findById(saleId);
+  const saleQuery = Sale.findOne({
+    _id: saleId,
+    ...buildTenantQuery(scope),
+  });
 
   if (session) {
     saleQuery.session(session);
@@ -81,6 +107,10 @@ export const createPayPalPayment = async ({
   amount,
   currency,
   userId,
+  tenantOwner,
+  business,
+  businessType,
+  isSuperAdmin = false,
   returnUrl,
   cancelUrl,
 }) => {
@@ -89,22 +119,38 @@ export const createPayPalPayment = async ({
   try {
     session.startTransaction();
 
-    const sale = await Sale.findById(saleId).session(session);
+    const scope = {
+      tenantOwner,
+      business,
+      businessType,
+      isSuperAdmin,
+    };
+
+    const sale = await Sale.findOne({
+      _id: saleId,
+      ...buildTenantQuery(scope),
+    }).session(session);
 
     if (!sale) {
       throw new Error("Sale not found.");
     }
 
     if (sale.status === "cancelled") {
-      throw new Error("Cancelled sale cannot receive payment.");
+      throw new Error(
+        "Cancelled sale cannot receive payment."
+      );
     }
 
     if (sale.status === "returned") {
-      throw new Error("Returned sale cannot receive payment.");
+      throw new Error(
+        "Returned sale cannot receive payment."
+      );
     }
 
     if (sale.paymentStatus === "paid") {
-      throw new Error("This sale is already fully paid.");
+      throw new Error(
+        "This sale is already fully paid."
+      );
     }
 
     const requestedAmount = Number(amount);
@@ -116,7 +162,9 @@ export const createPayPalPayment = async ({
     );
 
     if (requestedAmount <= 0) {
-      throw new Error("Payment amount must be greater than zero.");
+      throw new Error(
+        "Payment amount must be greater than zero."
+      );
     }
 
     if (requestedAmount > dueAmount) {
@@ -128,7 +176,10 @@ export const createPayPalPayment = async ({
     const payment = await SalePayment.create(
       [
         {
+          tenantOwner: sale.tenantOwner,
           business: sale.business,
+          businessType: sale.businessType,
+
           sale: sale._id,
           customer: sale.customer || null,
 
@@ -165,9 +216,11 @@ export const createPayPalPayment = async ({
       cancelUrl,
     });
 
-    createdPayment.gatewayOrderId = paypalOrder.orderId;
+    createdPayment.gatewayOrderId =
+      paypalOrder.orderId;
 
-    createdPayment.gatewayStatus = paypalOrder.status;
+    createdPayment.gatewayStatus =
+      paypalOrder.status;
 
     createdPayment.gatewayResponse =
       paypalOrder.response;
@@ -184,7 +237,6 @@ export const createPayPalPayment = async ({
     };
   } catch (error) {
     await session.abortTransaction();
-
     throw error;
   } finally {
     await session.endSession();
@@ -194,15 +246,27 @@ export const createPayPalPayment = async ({
 export const capturePayPalPayment = async ({
   paymentId,
   userId,
+  tenantOwner,
+  business,
+  businessType,
+  isSuperAdmin = false,
 }) => {
   const session = await mongoose.startSession();
 
   try {
     session.startTransaction();
 
-    const payment = await SalePayment.findById(
-      paymentId
-    ).session(session);
+    const scope = {
+      tenantOwner,
+      business,
+      businessType,
+      isSuperAdmin,
+    };
+
+    const payment = await SalePayment.findOne({
+      _id: paymentId,
+      ...buildTenantQuery(scope),
+    }).session(session);
 
     if (!payment) {
       throw new Error("Payment not found.");
@@ -229,9 +293,10 @@ export const capturePayPalPayment = async ({
       };
     }
 
-    const captureResponse = await capturePayPalOrder(
-      payment.gatewayOrderId
-    );
+    const captureResponse =
+      await capturePayPalOrder(
+        payment.gatewayOrderId
+      );
 
     payment.gatewayStatus =
       captureResponse.status || "";
@@ -249,19 +314,21 @@ export const capturePayPalPayment = async ({
       payment.paymentDate = new Date();
 
       payment.gatewayPaymentId =
-        capture?.id || "";
+        capture?.id || null;
 
       payment.transactionId =
-        capture?.id || "";
+        capture?.id || null;
 
       payment.updatedBy = userId;
 
       await payment.save({ session });
 
-      const sale = await updateSalePaymentTotals(
-        payment.sale,
-        session
-      );
+      const sale =
+        await updateSalePaymentTotals(
+          payment.sale,
+          scope,
+          session
+        );
 
       await session.commitTransaction();
 
@@ -272,9 +339,7 @@ export const capturePayPalPayment = async ({
       };
     }
 
-    if (
-      captureResponse.status === "PENDING"
-    ) {
+    if (captureResponse.status === "PENDING") {
       payment.status = "pending";
 
       await payment.save({ session });
@@ -289,7 +354,6 @@ export const capturePayPalPayment = async ({
     }
 
     payment.status = "failed";
-
     payment.updatedBy = userId;
 
     await payment.save({ session });
@@ -303,7 +367,6 @@ export const capturePayPalPayment = async ({
     };
   } catch (error) {
     await session.abortTransaction();
-
     throw error;
   } finally {
     await session.endSession();
@@ -312,8 +375,20 @@ export const capturePayPalPayment = async ({
 
 export const getPayPalPaymentStatus = async ({
   paymentId,
+  tenantOwner,
+  business,
+  businessType,
+  isSuperAdmin = false,
 }) => {
-  const payment = await SalePayment.findById(paymentId);
+  const payment = await SalePayment.findOne({
+    _id: paymentId,
+    ...buildTenantQuery({
+      tenantOwner,
+      business,
+      businessType,
+      isSuperAdmin,
+    }),
+  });
 
   if (!payment) {
     throw new Error("Payment not found.");
@@ -344,10 +419,20 @@ export const getPayPalPaymentStatus = async ({
 export const cancelPendingPayment = async ({
   paymentId,
   userId,
+  tenantOwner,
+  business,
+  businessType,
+  isSuperAdmin = false,
 }) => {
-  const payment = await SalePayment.findById(
-    paymentId
-  );
+  const payment = await SalePayment.findOne({
+    _id: paymentId,
+    ...buildTenantQuery({
+      tenantOwner,
+      business,
+      businessType,
+      isSuperAdmin,
+    }),
+  });
 
   if (!payment) {
     throw new Error("Payment not found.");
@@ -360,7 +445,9 @@ export const cancelPendingPayment = async ({
   }
 
   if (
-    !["pending", "failed"].includes(payment.status)
+    !["pending", "failed"].includes(
+      payment.status
+    )
   ) {
     throw new Error(
       "This payment cannot be cancelled."
@@ -380,20 +467,11 @@ export const handlePayPalWebhook = async ({
   rawBody,
 }) => {
   const {
-    "paypal-transmission-id":
-      transmissionId,
-
-    "paypal-transmission-time":
-      transmissionTime,
-
-    "paypal-transmission-sig":
-      transmissionSig,
-
-    "paypal-cert-url":
-      certUrl,
-
-    "paypal-auth-algo":
-      authAlgo,
+    "paypal-transmission-id": transmissionId,
+    "paypal-transmission-time": transmissionTime,
+    "paypal-transmission-sig": transmissionSig,
+    "paypal-cert-url": certUrl,
+    "paypal-auth-algo": authAlgo,
   } = headers;
 
   if (
@@ -431,7 +509,6 @@ export const handlePayPalWebhook = async ({
   }
 
   const eventType = webhookEvent.event_type;
-
   const resource = webhookEvent.resource;
 
   const orderId =
@@ -447,10 +524,11 @@ export const handlePayPalWebhook = async ({
     };
   }
 
-  const payment = await SalePayment.findOne({
-    gateway: "paypal",
-    gatewayOrderId: orderId,
-  });
+  const payment =
+    await SalePayment.findOne({
+      gateway: "paypal",
+      gatewayOrderId: orderId,
+    });
 
   if (!payment) {
     return {
@@ -459,6 +537,13 @@ export const handlePayPalWebhook = async ({
         "No matching local payment found.",
     };
   }
+
+  const scope = {
+    tenantOwner: payment.tenantOwner,
+    business: payment.business,
+    businessType: payment.businessType,
+    isSuperAdmin: false,
+  };
 
   if (
     eventType ===
@@ -469,14 +554,13 @@ export const handlePayPalWebhook = async ({
 
       payment.status = "completed";
 
-      payment.gatewayStatus =
-        "COMPLETED";
+      payment.gatewayStatus = "COMPLETED";
 
       payment.gatewayPaymentId =
-        captureId || "";
+        captureId || null;
 
       payment.transactionId =
-        captureId || "";
+        captureId || null;
 
       payment.paymentDate = new Date();
 
@@ -486,7 +570,8 @@ export const handlePayPalWebhook = async ({
       await payment.save();
 
       await updateSalePaymentTotals(
-        payment.sale
+        payment.sale,
+        scope
       );
     }
   }
@@ -498,8 +583,7 @@ export const handlePayPalWebhook = async ({
     if (payment.status !== "completed") {
       payment.status = "pending";
 
-      payment.gatewayStatus =
-        "PENDING";
+      payment.gatewayStatus = "PENDING";
 
       payment.gatewayResponse =
         webhookEvent;
@@ -515,8 +599,7 @@ export const handlePayPalWebhook = async ({
     if (payment.status !== "completed") {
       payment.status = "failed";
 
-      payment.gatewayStatus =
-        "DENIED";
+      payment.gatewayStatus = "DENIED";
 
       payment.gatewayResponse =
         webhookEvent;
