@@ -29,7 +29,7 @@ import purchaseItemsRoutes from "./routes/purchaseItemsRoutes.js";
 import stockMovementRoutes from "./routes/stockMovementRoutes.js";
 import saleRoutes from "./routes/saleRoutes.js";
 import saleItemRoutes from "./routes/saleItemRoutes.js";
-import salePaymentRoutes from "./routes/salePaymentRoutes.js"
+import salePaymentRoutes from "./routes/salePaymentRoutes.js";
 import saleReturnRoutes from "./routes/saleReturnRoutes.js";
 import saleReturnItemRoutes from "./routes/saleReturnItemRoutes.js";
 import expenseCategoryRoutes from "./routes/expenseCategoryRoutes.js";
@@ -84,7 +84,7 @@ const allowedOrigins = [
   "http://localhost:5174",
 
   // Production frontend later:
-  // "https://your-pos-frontend.com",
+  "https://pos-frontend-teal-tau.vercel.app",
 ];
 
 app.use(
@@ -181,11 +181,11 @@ app.use("/api/permissions", permissionRoutes);
 
 app.use("/api/roles", roleRoutes);
 
-app.use("/api/business",businessRoutes);
-app.use("/api/business-type",businessTypeRoutes);
-app.use("/api/brand",brandRoutes);
-app.use("/api/model",modelRoutes);
-app.use("/api/products" , productRoutes);
+app.use("/api/business", businessRoutes);
+app.use("/api/business-type", businessTypeRoutes);
+app.use("/api/brand", brandRoutes);
+app.use("/api/model", modelRoutes);
+app.use("/api/products", productRoutes);
 app.use("/api/products-Inventory", productInventRoutes);
 app.use("/api/Prod-cat", categroyRoutes);
 app.use("/api/supplier", supplierRoutes);
@@ -202,7 +202,7 @@ app.use("/api/expense-cat", expenseCategoryRoutes);
 app.use("/api/expense", expenseRoutes);
 app.use("/api/cash-register", cashRegisterRoutes);
 app.use("/api/reports", reportRoutes);
-app.use("/api/payment" , paymentRoutes)
+app.use("/api/payment", paymentRoutes);
 
 // ======================================================
 // 404 - Route Not Found
