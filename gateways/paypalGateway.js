@@ -4,12 +4,19 @@ const getPayPalBaseUrl = () => {
     : "https://api-m.sandbox.paypal.com";
 };
 
+// =====================================================
+// PAYPAL ACCESS TOKEN
+// =====================================================
+
 const getPayPalAccessToken = async () => {
   const clientId = process.env.PAYPAL_CLIENT_ID;
-  const clientSecret = process.env.PAYPAL_CLIENT_SECRET;
+  const clientSecret =
+    process.env.PAYPAL_CLIENT_SECRET;
 
   if (!clientId || !clientSecret) {
-    throw new Error("PayPal credentials are not configured.");
+    throw new Error(
+      "PayPal credentials are not configured."
+    );
   }
 
   const credentials = Buffer.from(
@@ -20,10 +27,13 @@ const getPayPalAccessToken = async () => {
     `${getPayPalBaseUrl()}/v1/oauth2/token`,
     {
       method: "POST",
+
       headers: {
         Authorization: `Basic ${credentials}`,
-        "Content-Type": "application/x-www-form-urlencoded",
+        "Content-Type":
+          "application/x-www-form-urlencoded",
       },
+
       body: "grant_type=client_credentials",
     }
   );
@@ -41,16 +51,27 @@ const getPayPalAccessToken = async () => {
   return data.access_token;
 };
 
-const paypalRequest = async (endpoint, options = {}) => {
-  const accessToken = await getPayPalAccessToken();
+// =====================================================
+// GENERIC PAYPAL REQUEST
+// =====================================================
+
+const paypalRequest = async (
+  endpoint,
+  options = {}
+) => {
+  const accessToken =
+    await getPayPalAccessToken();
 
   const response = await fetch(
     `${getPayPalBaseUrl()}${endpoint}`,
     {
       ...options,
+
       headers: {
         "Content-Type": "application/json",
+
         Authorization: `Bearer ${accessToken}`,
+
         ...(options.headers || {}),
       },
     }
@@ -66,6 +87,7 @@ const paypalRequest = async (endpoint, options = {}) => {
     );
 
     error.statusCode = response.status;
+
     error.paypalResponse = data;
 
     throw error;
@@ -73,6 +95,10 @@ const paypalRequest = async (endpoint, options = {}) => {
 
   return data;
 };
+
+// =====================================================
+// CREATE PAYPAL ORDER
+// =====================================================
 
 export const createPayPalOrder = async ({
   paymentId,
@@ -82,6 +108,32 @@ export const createPayPalOrder = async ({
   returnUrl,
   cancelUrl,
 }) => {
+  const numericAmount = Number(amount);
+
+  if (
+    !Number.isFinite(numericAmount) ||
+    numericAmount <= 0
+  ) {
+    throw new Error(
+      "PayPal amount must be greater than zero."
+    );
+  }
+
+  const normalizedCurrency =
+    currency?.toUpperCase();
+
+  if (!normalizedCurrency) {
+    throw new Error(
+      "PayPal currency is required."
+    );
+  }
+
+  if (!returnUrl || !cancelUrl) {
+    throw new Error(
+      "PayPal return URL and cancel URL are required."
+    );
+  }
+
   const orderPayload = {
     intent: "CAPTURE",
 
@@ -94,17 +146,23 @@ export const createPayPalOrder = async ({
         description,
 
         amount: {
-          currency_code: currency,
-          value: Number(amount).toFixed(2),
+          currency_code: normalizedCurrency,
+
+          value: numericAmount.toFixed(2),
         },
       },
     ],
 
     application_context: {
-      brand_name: "POS",
+      brand_name:
+        process.env.PAYPAL_BRAND_NAME || "POS",
+
       landing_page: "LOGIN",
+
       user_action: "PAY_NOW",
+
       return_url: returnUrl,
+
       cancel_url: cancelUrl,
     },
   };
@@ -116,6 +174,7 @@ export const createPayPalOrder = async ({
 
       headers: {
         "PayPal-Request-Id": `payment-${paymentId}-${Date.now()}`,
+
         Prefer: "return=representation",
       },
 
@@ -123,22 +182,36 @@ export const createPayPalOrder = async ({
     }
   );
 
-  const approvalLink = data.links?.find(
-    (link) => link.rel === "approve"
-  );
+  const approvalLink =
+    data.links?.find(
+      (link) => link.rel === "approve"
+    );
 
   return {
     orderId: data.id,
 
     status: data.status,
 
-    approvalUrl: approvalLink?.href || null,
+    approvalUrl:
+      approvalLink?.href || null,
 
     response: data,
   };
 };
 
-export const capturePayPalOrder = async (orderId) => {
+// =====================================================
+// CAPTURE PAYPAL ORDER
+// =====================================================
+
+export const capturePayPalOrder = async (
+  orderId
+) => {
+  if (!orderId) {
+    throw new Error(
+      "PayPal order ID is required."
+    );
+  }
+
   return paypalRequest(
     `/v2/checkout/orders/${orderId}/capture`,
     {
@@ -146,6 +219,7 @@ export const capturePayPalOrder = async (orderId) => {
 
       headers: {
         "PayPal-Request-Id": `capture-${orderId}`,
+
         Prefer: "return=representation",
       },
 
@@ -154,7 +228,19 @@ export const capturePayPalOrder = async (orderId) => {
   );
 };
 
-export const getPayPalOrder = async (orderId) => {
+// =====================================================
+// GET PAYPAL ORDER
+// =====================================================
+
+export const getPayPalOrder = async (
+  orderId
+) => {
+  if (!orderId) {
+    throw new Error(
+      "PayPal order ID is required."
+    );
+  }
+
   return paypalRequest(
     `/v2/checkout/orders/${orderId}`,
     {
@@ -162,6 +248,10 @@ export const getPayPalOrder = async (orderId) => {
     }
   );
 };
+
+// =====================================================
+// VERIFY PAYPAL WEBHOOK
+// =====================================================
 
 export const verifyPayPalWebhook = async ({
   transmissionId,
@@ -171,7 +261,17 @@ export const verifyPayPalWebhook = async ({
   authAlgo,
   webhookEvent,
 }) => {
-  const accessToken = await getPayPalAccessToken();
+  const webhookId =
+    process.env.PAYPAL_WEBHOOK_ID;
+
+  if (!webhookId) {
+    throw new Error(
+      "PAYPAL_WEBHOOK_ID is not configured."
+    );
+  }
+
+  const accessToken =
+    await getPayPalAccessToken();
 
   const response = await fetch(
     `${getPayPalBaseUrl()}/v1/notifications/verify-webhook-signature`,
@@ -180,16 +280,27 @@ export const verifyPayPalWebhook = async ({
 
       headers: {
         Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+
+        "Content-Type":
+          "application/json",
       },
 
       body: JSON.stringify({
         auth_algo: authAlgo,
+
         cert_url: certUrl,
-        transmission_id: transmissionId,
-        transmission_sig: transmissionSig,
-        transmission_time: transmissionTime,
-        webhook_id: process.env.PAYPAL_WEBHOOK_ID,
+
+        transmission_id:
+          transmissionId,
+
+        transmission_sig:
+          transmissionSig,
+
+        transmission_time:
+          transmissionTime,
+
+        webhook_id: webhookId,
+
         webhook_event: webhookEvent,
       }),
     }
@@ -204,6 +315,7 @@ export const verifyPayPalWebhook = async ({
     );
 
     error.statusCode = response.status;
+
     error.paypalResponse = data;
 
     throw error;

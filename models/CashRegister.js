@@ -1,10 +1,9 @@
-
 import mongoose from "mongoose";
 
 const cashRegisterSchema = new mongoose.Schema(
     {
         // ==========================================
-        // TENANT
+        // TENANT OWNER
         // ==========================================
         // The Admin who owns this cash register.
         //
@@ -29,7 +28,7 @@ const cashRegisterSchema = new mongoose.Schema(
         // BUSINESS
         // ==========================================
         // Business is the classification/context.
-        // It is NOT the tenant boundary.
+        // Tenant isolation is controlled by tenantOwner.
         //
         business: {
             type: mongoose.Schema.Types.ObjectId,
@@ -41,21 +40,16 @@ const cashRegisterSchema = new mongoose.Schema(
         // ==========================================
         // REGISTER USER
         // ==========================================
-        // The user/cashier operating this register.
+        // User operating this register.
         //
-        // This can be:
-        // Admin
-        // Manager
-        // or another allowed user depending on
-        // your application rules.
+        // Allowed:
+        // - Admin
+        // - Manager
         //
         user: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
-            required: [
-                true,
-                "Cash register user is required.",
-            ],
+            required: [true, "Cash register user is required."],
             index: true,
         },
 
@@ -64,18 +58,25 @@ const cashRegisterSchema = new mongoose.Schema(
         // ==========================================
         //
         // Example:
-        // REG-001
-        // REG-002
-        // MAIN-REGISTER
+        // REG-000001
+        // REG-000002
         //
-        // Unique per tenant, NOT globally.
+        // IMPORTANT:
+        // registerNumber is NOT globally unique.
+        //
+        // It is unique only together with tenantOwner.
+        //
+        // Tenant A:
+        //   REG-000001
+        //
+        // Tenant B:
+        //   REG-000001
+        //
+        // This is allowed.
         //
         registerNumber: {
             type: String,
-            required: [
-                true,
-                "Register number is required.",
-            ],
+            required: [true, "Register number is required."],
             trim: true,
             uppercase: true,
         },
@@ -86,10 +87,7 @@ const cashRegisterSchema = new mongoose.Schema(
 
         openedAt: {
             type: Date,
-            required: [
-                true,
-                "Opening time is required.",
-            ],
+            required: [true, "Opening time is required."],
             default: Date.now,
             index: true,
         },
@@ -113,98 +111,67 @@ const cashRegisterSchema = new mongoose.Schema(
         // ==========================================
         // OPENING BALANCE
         // ==========================================
-        // Physical cash available when the register
-        // is opened.
-        //
+
         openingBalance: {
             type: Number,
-            required: [
-                true,
-                "Opening balance is required.",
-            ],
-            min: [
-                0,
-                "Opening balance cannot be negative.",
-            ],
+            required: [true, "Opening balance is required."],
+            min: [0, "Opening balance cannot be negative."],
             default: 0,
         },
 
         // ==========================================
         // CASH SALES
         // ==========================================
-        // Cash received from customer sales.
-        //
+
         cashSales: {
             type: Number,
-            min: [
-                0,
-                "Cash sales cannot be negative.",
-            ],
+            min: [0, "Cash sales cannot be negative."],
             default: 0,
         },
 
         // ==========================================
         // CASH EXPENSES
         // ==========================================
-        // Cash paid for business expenses.
-        //
+
         cashExpenses: {
             type: Number,
-            min: [
-                0,
-                "Cash expenses cannot be negative.",
-            ],
+            min: [0, "Cash expenses cannot be negative."],
             default: 0,
         },
 
         // ==========================================
         // CASH REFUNDS
         // ==========================================
-        // Cash returned to customers.
-        //
+
         cashRefunds: {
             type: Number,
-            min: [
-                0,
-                "Cash refunds cannot be negative.",
-            ],
+            min: [0, "Cash refunds cannot be negative."],
             default: 0,
         },
 
         // ==========================================
         // CASH IN
         // ==========================================
-        // Extra cash manually added to register.
-        //
+
         cashIn: {
             type: Number,
-            min: [
-                0,
-                "Cash in cannot be negative.",
-            ],
+            min: [0, "Cash in cannot be negative."],
             default: 0,
         },
 
         // ==========================================
         // CASH OUT
         // ==========================================
-        // Cash manually removed from register.
-        //
+
         cashOut: {
             type: Number,
-            min: [
-                0,
-                "Cash out cannot be negative.",
-            ],
+            min: [0, "Cash out cannot be negative."],
             default: 0,
         },
 
         // ==========================================
         // EXPECTED CLOSING BALANCE
         // ==========================================
-        // Backend calculated value.
-        //
-        // Formula:
         //
         // openingBalance
         // + cashSales
@@ -222,8 +189,7 @@ const cashRegisterSchema = new mongoose.Schema(
         // ==========================================
         // ACTUAL CLOSING BALANCE
         // ==========================================
-        // Physical cash counted by cashier.
-        //
+
         actualClosingBalance: {
             type: Number,
             min: 0,
@@ -233,11 +199,9 @@ const cashRegisterSchema = new mongoose.Schema(
         // ==========================================
         // DIFFERENCE
         // ==========================================
-        // Formula:
         //
         // actualClosingBalance
-        // -
-        // expectedClosingBalance
+        // - expectedClosingBalance
         //
         difference: {
             type: Number,
@@ -262,10 +226,7 @@ const cashRegisterSchema = new mongoose.Schema(
         openedBy: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "User",
-            required: [
-                true,
-                "Opened by is required.",
-            ],
+            required: [true, "Opened by is required."],
         },
 
         // ==========================================
@@ -287,22 +248,32 @@ const cashRegisterSchema = new mongoose.Schema(
 // UNIQUE REGISTER NUMBER PER TENANT
 // ======================================================
 //
+// IMPORTANT:
+//
+// This is intentionally NOT:
+//
+// registerNumber: { unique: true }
+//
+// Because register numbers are allowed to repeat
+// between different tenants.
+//
 // Tenant A:
-//   REG-001
-//   REG-002
+//   tenantOwner = A
+//   REG-000001
 //
 // Tenant B:
-//   REG-001
-//   REG-002
+//   tenantOwner = B
+//   REG-000001
 //
-// This is allowed.
+// Both are valid.
 //
-// But inside Tenant A:
+// But:
 //
-//   REG-001
-//   REG-001
+// Tenant A:
+//   REG-000001
+//   REG-000001
 //
-// is NOT allowed.
+// is NOT valid.
 //
 // ======================================================
 
@@ -311,21 +282,11 @@ cashRegisterSchema.index(
         tenantOwner: 1,
         registerNumber: 1,
     },
-    {
-        unique: true,
-        name: "tenantOwner_1_registerNumber_1",
-    }
+    
 );
 
 // ======================================================
 // TENANT + STATUS + OPENED AT
-// ======================================================
-//
-// Useful for:
-// - getting open registers
-// - register history
-// - tenant-specific register listing
-//
 // ======================================================
 
 cashRegisterSchema.index({
@@ -336,12 +297,6 @@ cashRegisterSchema.index({
 
 // ======================================================
 // TENANT + USER + OPENED AT
-// ======================================================
-//
-// Useful for:
-// - finding registers operated by a user
-// - register history for a cashier
-//
 // ======================================================
 
 cashRegisterSchema.index({

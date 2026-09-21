@@ -9,7 +9,7 @@ import {
   restoreExpenseCategory,
 } from "../controllers/expenseCategoryController.js";
 
-import {protect} from "../middlewares/auth.middleware.js";
+import { protect } from "../middlewares/auth.middleware.js";
 import { authorize } from "../middlewares/permission.middleware.js";
 import validate from "../middlewares/validate.js";
 
@@ -20,7 +20,10 @@ import {
 
 const router = express.Router();
 
-// Create
+// =====================================================
+// CREATE EXPENSE CATEGORY
+// POST /api/expense-categories
+// =====================================================
 router.post(
   "/",
   protect,
@@ -29,7 +32,10 @@ router.post(
   createExpenseCategory
 );
 
-// Get all
+// =====================================================
+// GET ALL EXPENSE CATEGORIES
+// GET /api/expense-categories
+// =====================================================
 router.get(
   "/",
   protect,
@@ -37,7 +43,10 @@ router.get(
   getAllExpenseCategories
 );
 
-// Get by ID
+// =====================================================
+// GET EXPENSE CATEGORY BY ID
+// GET /api/expense-categories/:id
+// =====================================================
 router.get(
   "/:id",
   protect,
@@ -45,7 +54,10 @@ router.get(
   getExpenseCategoryById
 );
 
-// Update
+// =====================================================
+// UPDATE EXPENSE CATEGORY
+// PATCH /api/expense-categories/:id
+// =====================================================
 router.patch(
   "/:id",
   protect,
@@ -54,7 +66,10 @@ router.patch(
   updateExpenseCategory
 );
 
-// Soft delete
+// =====================================================
+// SOFT DELETE EXPENSE CATEGORY
+// DELETE /api/expense-categories/:id
+// =====================================================
 router.delete(
   "/:id",
   protect,
@@ -62,7 +77,10 @@ router.delete(
   deleteExpenseCategory
 );
 
-// Restore
+// =====================================================
+// RESTORE EXPENSE CATEGORY
+// PATCH /api/expense-categories/:id/restore
+// =====================================================
 router.patch(
   "/:id/restore",
   protect,

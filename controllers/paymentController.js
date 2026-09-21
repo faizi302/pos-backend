@@ -11,23 +11,41 @@ import {
   errorResponse,
 } from "../utils/apiResponse.js";
 
+import {
+  getTenantContext,
+} from "../utils/tenantContext.js";
+
+// =====================================================
+// CREATE PAYPAL PAYMENT
+// =====================================================
+
 export const createPayment = async (req, res, next) => {
   try {
-    const {
-      saleId,
-      amount,
-      currency,
-      returnUrl,
-      cancelUrl,
-    } = req.body;
+    const { saleId } = req.body;
 
+    if (!saleId) {
+      return errorResponse(res, 400, "saleId is required.");
+    }
+
+    // -------------------------------------------------
+    // RESOLVE TENANT FROM AUTHENTICATED USER
+    // -------------------------------------------------
+    const tenant = await getTenantContext(req);
+
+    // -------------------------------------------------
+    // CREATE PAYMENT
+    // Backend decides:
+    // - amount          → from Sale.dueAmount
+    // - returnUrl       → from process.env.PAYPAL_RETURN_URL
+    // - cancelUrl       → from process.env.PAYPAL_CANCEL_URL
+    // -------------------------------------------------
     const result = await createPayPalPayment({
       saleId,
-      amount,
-      currency,
       userId: req.user._id,
-      returnUrl,
-      cancelUrl,
+      tenantOwner: tenant.tenantOwner,
+      business: tenant.business,
+      businessType: tenant.businessType,
+      isSuperAdmin: tenant.isSuperAdmin,
     });
 
     return successResponse(
@@ -41,12 +59,39 @@ export const createPayment = async (req, res, next) => {
   }
 };
 
-export const capturePayment = async (req, res, next) => {
+// =====================================================
+// CAPTURE PAYMENT
+// =====================================================
+
+export const capturePayment = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const result = await capturePayPalPayment({
-      paymentId: req.params.id,
-      userId: req.user._id,
-    });
+    const tenant =
+      await getTenantContext(req);
+
+    const result =
+      await capturePayPalPayment({
+        paymentId:
+          req.params.id,
+
+        userId:
+          req.user._id,
+
+        tenantOwner:
+          tenant.tenantOwner,
+
+        business:
+          tenant.business,
+
+        businessType:
+          tenant.businessType,
+
+        isSuperAdmin:
+          tenant.isSuperAdmin,
+      });
 
     if (result.success) {
       return successResponse(
@@ -77,27 +122,48 @@ export const capturePayment = async (req, res, next) => {
   }
 };
 
-export const getPaymentStatus = async (
-  req,
-  res,
-  next
-) => {
-  try {
-    const result =
-      await getPayPalPaymentStatus({
-        paymentId: req.params.id,
-      });
+// =====================================================
+// GET PAYMENT STATUS
+// =====================================================
 
-    return successResponse(
-      res,
-      200,
-      "Payment status fetched successfully.",
-      result
-    );
-  } catch (error) {
-    next(error);
-  }
-};
+export const getPaymentStatus =
+  async (req, res, next) => {
+    try {
+      const tenant =
+        await getTenantContext(req);
+
+      const result =
+        await getPayPalPaymentStatus({
+          paymentId:
+            req.params.id,
+
+          tenantOwner:
+            tenant.tenantOwner,
+
+          business:
+            tenant.business,
+
+          businessType:
+            tenant.businessType,
+
+          isSuperAdmin:
+            tenant.isSuperAdmin,
+        });
+
+      return successResponse(
+        res,
+        200,
+        "Payment status fetched successfully.",
+        result
+      );
+    } catch (error) {
+      next(error);
+    }
+  };
+
+// =====================================================
+// CANCEL PAYMENT
+// =====================================================
 
 export const cancelPayment = async (
   req,
@@ -105,10 +171,28 @@ export const cancelPayment = async (
   next
 ) => {
   try {
+    const tenant =
+      await getTenantContext(req);
+
     const payment =
       await cancelPendingPayment({
-        paymentId: req.params.id,
-        userId: req.user._id,
+        paymentId:
+          req.params.id,
+
+        userId:
+          req.user._id,
+
+        tenantOwner:
+          tenant.tenantOwner,
+
+        business:
+          tenant.business,
+
+        businessType:
+          tenant.businessType,
+
+        isSuperAdmin:
+          tenant.isSuperAdmin,
       });
 
     return successResponse(
@@ -122,19 +206,36 @@ export const cancelPayment = async (
   }
 };
 
+// =====================================================
+// PAYPAL WEBHOOK
+// =====================================================
+// IMPORTANT:
+// Do NOT use authenticated tenant middleware here.
+//
+// PayPal calls this endpoint directly.
+// The payment itself determines the tenant after
+// webhook verification.
+// =====================================================
+
 export const paypalWebhook = async (
   req,
   res
 ) => {
   try {
     await handlePayPalWebhook({
-      headers: req.headers,
-      rawBody: req.body,
+      headers:
+        req.headers,
+
+      rawBody:
+        req.body,
     });
 
     return res.status(200).json({
-      success: true,
-      message: "Webhook received.",
+      success:
+        true,
+
+      message:
+        "Webhook received.",
     });
   } catch (error) {
     console.error(
@@ -143,8 +244,11 @@ export const paypalWebhook = async (
     );
 
     return res.status(400).json({
-      success: false,
-      message: error.message,
+      success:
+        false,
+
+      message:
+        error.message,
     });
   }
 };

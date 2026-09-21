@@ -2,6 +2,8 @@ import Sale from "../models/Sale.js";
 import Customer from "../models/Customer.js";
 import Business from "../models/Business.js";
 import BusinessType from "../models/BusinessType.js";
+import SaleItem from "../models/SaleItem.js";
+import ProductInventory from "../models/ProductInventory.js";
 
 import {
   errorResponse,
@@ -1697,6 +1699,38 @@ export const cancelSale = async (
         res,
         400,
         "Completed sales cannot be cancelled. Use sale return instead."
+      );
+    }
+
+    // ==================================================
+    // RESTORE STOCK FOR ALL ITEMS
+    // ==================================================
+    //
+    // Stock was already deducted when SaleItems were
+    // created / updated. On cancel we must put it back.
+    //
+    // ==================================================
+
+    const items = await SaleItem.find({
+      sale: sale._id,
+      tenantOwner: sale.tenantOwner,
+      business: sale.business,
+      businessType: sale.businessType,
+    });
+
+    for (const item of items) {
+      await ProductInventory.findOneAndUpdate(
+        {
+          _id: item.productInventory,
+          tenantOwner: sale.tenantOwner,
+          business: sale.business,
+          businessType: sale.businessType,
+          isActive: true,
+        },
+        {
+          $inc: { quantity: item.quantity },
+          $set: { updatedBy: req.user._id },
+        }
       );
     }
 

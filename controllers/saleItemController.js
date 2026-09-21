@@ -68,15 +68,10 @@ const calculateLine = ({
   tax = 0,
 }) => {
   const lineSubtotal = quantity * salePrice;
-  const discountAmount = Math.min(
-    discount,
-    lineSubtotal
-  );
+  const discountAmount = Math.min(discount, lineSubtotal);
 
   const lineTotal =
-    lineSubtotal -
-    discountAmount +
-    tax;
+    lineSubtotal - discountAmount + tax;
 
   return {
     lineSubtotal,
@@ -84,11 +79,7 @@ const calculateLine = ({
   };
 };
 
-const recalculateSale = async (
-  sale,
-  scope,
-  userId
-) => {
+const recalculateSale = async (sale, scope, userId) => {
   const items = await SaleItem.find({
     sale: sale._id,
     ...scope,
@@ -126,8 +117,7 @@ const recalculateSale = async (
   );
 
   sale.dueAmount =
-    sale.totalAmount -
-    sale.paidAmount;
+    sale.totalAmount - sale.paidAmount;
 
   sale.paymentStatus =
     sale.dueAmount <= 0
@@ -145,40 +135,55 @@ const getPopulatedItem = (id) =>
   SaleItem.findById(id)
     .populate("tenantOwner", "name email")
     .populate("business", "name")
-    .populate(
-      "businessType",
-      "name"
-    )
+    .populate("businessType", "name")
     .populate(
       "sale",
       "saleNumber saleDate status totalAmount"
     )
-    .populate(
-      "product",
-      "name sku barcode"
-    )
+    .populate("product", "name sku barcode")
     .populate(
       "productInventory",
       "color size quantity salePrice"
     )
-    .populate(
-      "createdBy",
-      "name email"
-    )
-    .populate(
-      "updatedBy",
-      "name email"
-    );
+    .populate("createdBy", "name email")
+    .populate("updatedBy", "name email");
+
+/**
+ * Atomic stock change.
+ * Returns the updated inventory document or null on failure.
+ */
+const adjustInventoryQuantity = async (
+  inventoryId,
+  delta,
+  userId,
+  scope
+) => {
+  // delta < 0 → deduct, delta > 0 → restore
+  const updated = await ProductInventory.findOneAndUpdate(
+    {
+      _id: inventoryId,
+      ...scope,
+      isActive: true,
+      // prevent going negative when deducting
+      ...(delta < 0
+        ? { quantity: { $gte: Math.abs(delta) } }
+        : {}),
+    },
+    {
+      $inc: { quantity: delta },
+      $set: { updatedBy: userId },
+    },
+    { new: true }
+  );
+
+  return updated;
+};
 
 // =====================================================
 // CREATE
 // =====================================================
 
-export const createSaleItem = async (
-  req,
-  res,
-  next
-) => {
+export const createSaleItem = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
 
@@ -225,11 +230,7 @@ export const createSaleItem = async (
     });
 
     if (!saleDoc) {
-      return errorResponse(
-        res,
-        404,
-        "Sale not found."
-      );
+      return errorResponse(res, 404, "Sale not found.");
     }
 
     if (
@@ -254,20 +255,15 @@ export const createSaleItem = async (
     });
 
     if (!productDoc) {
-      return errorResponse(
-        res,
-        404,
-        "Product not found."
-      );
+      return errorResponse(res, 404, "Product not found.");
     }
 
-    const inventory =
-      await ProductInventory.findOne({
-        _id: productInventory,
-        ...scope,
-        product,
-        isActive: true,
-      });
+    const inventory = await ProductInventory.findOne({
+      _id: productInventory,
+      ...scope,
+      product,
+      isActive: true,
+    });
 
     if (!inventory) {
       return errorResponse(
@@ -300,29 +296,33 @@ export const createSaleItem = async (
     }
 
     const salePrice =
-      req.body.salePrice ??
-      inventory.salePrice ??
-      0;
-
+      req.body.salePrice ?? inventory.salePrice ?? 0;
     const discount =
-      req.body.discount ??
-      inventory.discount ??
-      0;
+      req.body.discount ?? inventory.discount ?? 0;
+    const tax = req.body.tax ?? inventory.tax ?? 0;
 
-    const tax =
-      req.body.tax ??
-      inventory.tax ??
-      0;
-
-    const {
-      lineSubtotal,
-      lineTotal,
-    } = calculateLine({
+    const { lineSubtotal, lineTotal } = calculateLine({
       quantity,
       salePrice,
       discount,
       tax,
     });
+
+    // ---------- ATOMIC STOCK DEDUCTION ----------
+    const updatedInventory = await adjustInventoryQuantity(
+      inventory._id,
+      -quantity,
+      req.user._id,
+      scope
+    );
+
+    if (!updatedInventory) {
+      return errorResponse(
+        res,
+        400,
+        "Insufficient stock (concurrent update detected)."
+      );
+    }
 
     const saleItem = await SaleItem.create({
       ...scope,
@@ -338,11 +338,7 @@ export const createSaleItem = async (
       createdBy: req.user._id,
     });
 
-    await recalculateSale(
-      saleDoc,
-      scope,
-      req.user._id
-    );
+    await recalculateSale(saleDoc, scope, req.user._id);
 
     return successResponse(
       res,
@@ -359,11 +355,7 @@ export const createSaleItem = async (
 // GET ALL
 // =====================================================
 
-export const getAllSaleItems = async (
-  req,
-  res,
-  next
-) => {
+export const getAllSaleItems = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
 
@@ -385,41 +377,25 @@ export const getAllSaleItems = async (
       productInventory,
     } = req.query;
 
-    const currentPage = Math.max(
-      Number(page) || 1,
-      1
-    );
-
+    const currentPage = Math.max(Number(page) || 1, 1);
     const currentLimit = Math.min(
       Math.max(Number(limit) || 20, 1),
       100
     );
 
-    const filter = {
-      ...scope,
-    };
+    const filter = { ...scope };
 
     if (sale) {
       if (!isValidObjectId(sale)) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid sale ID."
-        );
+        return errorResponse(res, 400, "Invalid sale ID.");
       }
-
       filter.sale = sale;
     }
 
     if (product) {
       if (!isValidObjectId(product)) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid product ID."
-        );
+        return errorResponse(res, 400, "Invalid product ID.");
       }
-
       filter.product = product;
     }
 
@@ -431,44 +407,30 @@ export const getAllSaleItems = async (
           "Invalid product inventory ID."
         );
       }
-
-      filter.productInventory =
-        productInventory;
+      filter.productInventory = productInventory;
     }
 
-    const skip =
-      (currentPage - 1) *
-      currentLimit;
+    const skip = (currentPage - 1) * currentLimit;
 
-    const [items, total] =
-      await Promise.all([
-        SaleItem.find(filter)
-          .populate(
-            "business",
-            "name"
-          )
-          .populate(
-            "businessType",
-            "name"
-          )
-          .populate(
-            "sale",
-            "saleNumber saleDate status totalAmount"
-          )
-          .populate(
-            "product",
-            "name sku barcode"
-          )
-          .populate(
-            "productInventory",
-            "color size quantity salePrice"
-          )
-          .sort({ createdAt: -1 })
-          .skip(skip)
-          .limit(currentLimit),
+    const [items, total] = await Promise.all([
+      SaleItem.find(filter)
+        .populate("business", "name")
+        .populate("businessType", "name")
+        .populate(
+          "sale",
+          "saleNumber saleDate status totalAmount"
+        )
+        .populate("product", "name sku barcode")
+        .populate(
+          "productInventory",
+          "color size quantity salePrice"
+        )
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(currentLimit),
 
-        SaleItem.countDocuments(filter),
-      ]);
+      SaleItem.countDocuments(filter),
+    ]);
 
     return successResponse(
       res,
@@ -480,9 +442,7 @@ export const getAllSaleItems = async (
           total,
           page: currentPage,
           limit: currentLimit,
-          totalPages: Math.ceil(
-            total / currentLimit
-          ),
+          totalPages: Math.ceil(total / currentLimit),
         },
       }
     );
@@ -495,11 +455,7 @@ export const getAllSaleItems = async (
 // GET BY SALE
 // =====================================================
 
-export const getSaleItemsBySale = async (
-  req,
-  res,
-  next
-) => {
+export const getSaleItemsBySale = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
 
@@ -515,11 +471,7 @@ export const getSaleItemsBySale = async (
     const { saleId } = req.params;
 
     if (!isValidObjectId(saleId)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid sale ID."
-      );
+      return errorResponse(res, 400, "Invalid sale ID.");
     }
 
     const sale = await Sale.findOne({
@@ -528,21 +480,14 @@ export const getSaleItemsBySale = async (
     });
 
     if (!sale) {
-      return errorResponse(
-        res,
-        404,
-        "Sale not found."
-      );
+      return errorResponse(res, 404, "Sale not found.");
     }
 
     const items = await SaleItem.find({
       sale: saleId,
       ...scope,
     })
-      .populate(
-        "product",
-        "name sku barcode"
-      )
+      .populate("product", "name sku barcode")
       .populate(
         "productInventory",
         "color size quantity salePrice"
@@ -564,11 +509,7 @@ export const getSaleItemsBySale = async (
 // GET BY ID
 // =====================================================
 
-export const getSaleItemById = async (
-  req,
-  res,
-  next
-) => {
+export const getSaleItemById = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
 
@@ -595,38 +536,20 @@ export const getSaleItemById = async (
       _id: id,
       ...scope,
     })
-      .populate(
-        "tenantOwner",
-        "name email"
-      )
-      .populate(
-        "business",
-        "name"
-      )
-      .populate(
-        "businessType",
-        "name"
-      )
+      .populate("tenantOwner", "name email")
+      .populate("business", "name")
+      .populate("businessType", "name")
       .populate(
         "sale",
         "saleNumber saleDate status totalAmount"
       )
-      .populate(
-        "product",
-        "name sku barcode"
-      )
+      .populate("product", "name sku barcode")
       .populate(
         "productInventory",
         "color size quantity salePrice"
       )
-      .populate(
-        "createdBy",
-        "name email"
-      )
-      .populate(
-        "updatedBy",
-        "name email"
-      );
+      .populate("createdBy", "name email")
+      .populate("updatedBy", "name email");
 
     if (!item) {
       return errorResponse(
@@ -651,11 +574,7 @@ export const getSaleItemById = async (
 // UPDATE
 // =====================================================
 
-export const updateSaleItem = async (
-  req,
-  res,
-  next
-) => {
+export const updateSaleItem = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
 
@@ -678,11 +597,10 @@ export const updateSaleItem = async (
       );
     }
 
-    const saleItem =
-      await SaleItem.findOne({
-        _id: id,
-        ...scope,
-      });
+    const saleItem = await SaleItem.findOne({
+      _id: id,
+      ...scope,
+    });
 
     if (!saleItem) {
       return errorResponse(
@@ -720,17 +638,11 @@ export const updateSaleItem = async (
       );
     }
 
-    const product =
-      req.body.product ||
-      saleItem.product;
-
+    const product = req.body.product || saleItem.product;
     const productInventory =
-      req.body.productInventory ||
-      saleItem.productInventory;
-
+      req.body.productInventory || saleItem.productInventory;
     const quantity =
-      req.body.quantity ??
-      saleItem.quantity;
+      req.body.quantity ?? saleItem.quantity;
 
     if (
       !isValidObjectId(product) ||
@@ -751,20 +663,15 @@ export const updateSaleItem = async (
     });
 
     if (!productDoc) {
-      return errorResponse(
-        res,
-        404,
-        "Product not found."
-      );
+      return errorResponse(res, 404, "Product not found.");
     }
 
-    const inventory =
-      await ProductInventory.findOne({
-        _id: productInventory,
-        ...scope,
-        product,
-        isActive: true,
-      });
+    const inventory = await ProductInventory.findOne({
+      _id: productInventory,
+      ...scope,
+      product,
+      isActive: true,
+    });
 
     if (!inventory) {
       return errorResponse(
@@ -774,7 +681,11 @@ export const updateSaleItem = async (
       );
     }
 
-    if (quantity > inventory.quantity) {
+    // ---------- QUANTITY DIFFERENCE ----------
+    const oldQty = saleItem.quantity;
+    const diff = quantity - oldQty; // positive = need more stock, negative = return stock
+
+    if (diff > 0 && diff > inventory.quantity) {
       return errorResponse(
         res,
         400,
@@ -782,13 +693,12 @@ export const updateSaleItem = async (
       );
     }
 
-    const duplicate =
-      await SaleItem.findOne({
-        sale: sale._id,
-        productInventory,
-        ...scope,
-        _id: { $ne: id },
-      });
+    const duplicate = await SaleItem.findOne({
+      sale: sale._id,
+      productInventory,
+      ...scope,
+      _id: { $ne: id },
+    });
 
     if (duplicate) {
       return errorResponse(
@@ -803,46 +713,48 @@ export const updateSaleItem = async (
       saleItem.salePrice ??
       inventory.salePrice ??
       0;
-
     const discount =
-      req.body.discount ??
-      saleItem.discount ??
-      0;
+      req.body.discount ?? saleItem.discount ?? 0;
+    const tax = req.body.tax ?? saleItem.tax ?? 0;
 
-    const tax =
-      req.body.tax ??
-      saleItem.tax ??
-      0;
-
-    const {
-      lineSubtotal,
-      lineTotal,
-    } = calculateLine({
+    const { lineSubtotal, lineTotal } = calculateLine({
       quantity,
       salePrice,
       discount,
       tax,
     });
 
+    // ---------- ATOMIC STOCK ADJUSTMENT ----------
+    if (diff !== 0) {
+      const updatedInventory = await adjustInventoryQuantity(
+        inventory._id,
+        -diff, // if diff>0 we subtract, if diff<0 we add
+        req.user._id,
+        scope
+      );
+
+      if (!updatedInventory) {
+        return errorResponse(
+          res,
+          400,
+          "Insufficient stock (concurrent update detected)."
+        );
+      }
+    }
+
     saleItem.product = product;
-    saleItem.productInventory =
-      productInventory;
+    saleItem.productInventory = productInventory;
     saleItem.quantity = quantity;
     saleItem.salePrice = salePrice;
     saleItem.discount = discount;
     saleItem.tax = tax;
-    saleItem.lineSubtotal =
-      lineSubtotal;
+    saleItem.lineSubtotal = lineSubtotal;
     saleItem.lineTotal = lineTotal;
     saleItem.updatedBy = req.user._id;
 
     await saleItem.save();
 
-    await recalculateSale(
-      sale,
-      scope,
-      req.user._id
-    );
+    await recalculateSale(sale, scope, req.user._id);
 
     return successResponse(
       res,
@@ -859,11 +771,7 @@ export const updateSaleItem = async (
 // DELETE
 // =====================================================
 
-export const deleteSaleItem = async (
-  req,
-  res,
-  next
-) => {
+export const deleteSaleItem = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
 
@@ -886,11 +794,10 @@ export const deleteSaleItem = async (
       );
     }
 
-    const saleItem =
-      await SaleItem.findOne({
-        _id: id,
-        ...scope,
-      });
+    const saleItem = await SaleItem.findOne({
+      _id: id,
+      ...scope,
+    });
 
     if (!saleItem) {
       return errorResponse(
@@ -928,16 +835,20 @@ export const deleteSaleItem = async (
       );
     }
 
+    // ---------- RESTORE STOCK ----------
+    await adjustInventoryQuantity(
+      saleItem.productInventory,
+      +saleItem.quantity,
+      req.user._id,
+      scope
+    );
+
     await SaleItem.deleteOne({
       _id: id,
       ...scope,
     });
 
-    await recalculateSale(
-      sale,
-      scope,
-      req.user._id
-    );
+    await recalculateSale(sale, scope, req.user._id);
 
     return successResponse(
       res,

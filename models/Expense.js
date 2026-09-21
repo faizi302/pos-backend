@@ -2,12 +2,41 @@ import mongoose from "mongoose";
 
 const expenseSchema = new mongoose.Schema(
   {
+    // ==================================================
+    // TENANT / BUSINESS
+    // ==================================================
+
+    // REAL tenant isolation field.
+    //
+    // Admin A -> tenantOwner = Admin A
+    // Admin B -> tenantOwner = Admin B
+    //
+    // Both tenants can have the same:
+    // Business
+    // Expense Number
+    // Expense Category
+    //
+    // because tenantOwner is different.
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: [true, "Tenant owner is required."],
+      index: true,
+    },
+
+    // Business classification.
+    //
+    // This is NOT the main security boundary.
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
       required: [true, "Business is required."],
       index: true,
     },
+
+    // ==================================================
+    // EXPENSE CATEGORY
+    // ==================================================
 
     expenseCategory: {
       type: mongoose.Schema.Types.ObjectId,
@@ -16,6 +45,10 @@ const expenseSchema = new mongoose.Schema(
       index: true,
     },
 
+    // ==================================================
+    // EXPENSE NUMBER
+    // ==================================================
+
     expenseNumber: {
       type: String,
       required: [true, "Expense number is required."],
@@ -23,12 +56,20 @@ const expenseSchema = new mongoose.Schema(
       uppercase: true,
     },
 
+    // ==================================================
+    // EXPENSE DATE
+    // ==================================================
+
     expenseDate: {
       type: Date,
       required: [true, "Expense date is required."],
       default: Date.now,
       index: true,
     },
+
+    // ==================================================
+    // BASIC INFORMATION
+    // ==================================================
 
     title: {
       type: String,
@@ -44,11 +85,19 @@ const expenseSchema = new mongoose.Schema(
       default: "",
     },
 
+    // ==================================================
+    // AMOUNT
+    // ==================================================
+
     amount: {
       type: Number,
       required: [true, "Expense amount is required."],
       min: [0, "Expense amount cannot be negative."],
     },
+
+    // ==================================================
+    // PAYMENT
+    // ==================================================
 
     paymentMethod: {
       type: String,
@@ -71,6 +120,10 @@ const expenseSchema = new mongoose.Schema(
       default: "",
     },
 
+    // ==================================================
+    // RECEIPT
+    // ==================================================
+
     receipt: {
       url: {
         type: String,
@@ -88,6 +141,10 @@ const expenseSchema = new mongoose.Schema(
       },
     },
 
+    // ==================================================
+    // STATUS
+    // ==================================================
+
     status: {
       type: String,
       enum: ["draft", "paid", "cancelled"],
@@ -95,12 +152,20 @@ const expenseSchema = new mongoose.Schema(
       index: true,
     },
 
+    // ==================================================
+    // NOTES
+    // ==================================================
+
     notes: {
       type: String,
       trim: true,
       maxlength: 1000,
       default: "",
     },
+
+    // ==================================================
+    // AUDIT
+    // ==================================================
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -119,36 +184,81 @@ const expenseSchema = new mongoose.Schema(
   }
 );
 
-// Unique expense number inside a business
+// ======================================================
+// UNIQUE EXPENSE NUMBER PER TENANT
+// ======================================================
+//
+// Admin A:
+// tenantOwner = A
+// expenseNumber = EXP-000001
+//
+// Admin B:
+// tenantOwner = B
+// expenseNumber = EXP-000001
+//
+// Both are allowed.
+//
+// Same tenant + same expense number = NOT allowed.
+//
+// ======================================================
+
 expenseSchema.index(
-  { business: 1, expenseNumber: 1 },
-  { unique: true }
+  {
+    tenantOwner: 1,
+    expenseNumber: 1,
+  },
+  {
+    unique: true,
+    name: "tenantOwner_1_expenseNumber_1",
+  }
 );
 
-// Category + date reporting
+// ======================================================
+// CATEGORY + DATE REPORTING
+// ======================================================
+
 expenseSchema.index({
-  business: 1,
+  tenantOwner: 1,
   expenseCategory: 1,
   expenseDate: -1,
 });
 
-// Payment method reporting
+// ======================================================
+// PAYMENT METHOD REPORTING
+// ======================================================
+
 expenseSchema.index({
-  business: 1,
+  tenantOwner: 1,
   paymentMethod: 1,
   expenseDate: -1,
 });
 
-// Status filtering
+// ======================================================
+// STATUS FILTERING
+// ======================================================
+
 expenseSchema.index({
-  business: 1,
+  tenantOwner: 1,
   status: 1,
   expenseDate: -1,
 });
 
-// General date filtering
+// ======================================================
+// BUSINESS REPORTING
+// ======================================================
+
 expenseSchema.index({
+  tenantOwner: 1,
   business: 1,
+  expenseDate: -1,
+});
+
+// ======================================================
+// GENERAL DATE FILTERING
+// ======================================================
+
+expenseSchema.index({
+  tenantOwner: 1,
   expenseDate: -1,
 });
 

@@ -8,15 +8,157 @@ import {
   errorResponse,
 } from "../utils/apiResponse.js";
 
-const getBusinessId = (req) => {
-  // SuperAdmin can select a business
-  if (req.user.role?.slug === "super-admin") {
-    return req.body.business || req.query.business || null;
+import {
+  getTenantContext,
+  buildTenantQuery,
+  isValidObjectId,
+} from "../utils/tenantContext.js";
+
+// ======================================================
+// GET EXPENSE CATEGORY SCOPE
+// ======================================================
+//
+// SUPER ADMIN
+// → Can select tenantOwner + business.
+//
+// ADMIN
+// → tenantOwner = Admin._id
+// → business = Admin.business
+//
+// MANAGER
+// → tenantOwner = Admin._id
+// → business = Admin.business
+//
+// Admin / Manager values are never trusted from
+// req.body or req.query.
+//
+// ======================================================
+
+const getExpenseCategoryScope = async (
+  req,
+  options = {}
+) => {
+  const {
+    requireCreateContext = false,
+  } = options;
+
+  const tenant =
+    await getTenantContext(req);
+
+  // ====================================================
+  // SUPER ADMIN
+  // ====================================================
+
+  if (tenant.isSuperAdmin) {
+    const tenantOwner =
+      req.body?.tenantOwner ||
+      req.query?.tenantOwner ||
+      null;
+
+    const business =
+      req.body?.business ||
+      req.query?.business ||
+      null;
+
+    // --------------------------------------------------
+    // CREATE
+    // --------------------------------------------------
+
+    if (requireCreateContext) {
+      if (!tenantOwner) {
+        throw new Error(
+          "Tenant owner is required for Super Admin."
+        );
+      }
+
+      if (!business) {
+        throw new Error(
+          "Business is required for Super Admin."
+        );
+      }
+
+      if (!isValidObjectId(tenantOwner)) {
+        throw new Error(
+          "Invalid tenant owner ID."
+        );
+      }
+
+      if (!isValidObjectId(business)) {
+        throw new Error(
+          "Invalid business ID."
+        );
+      }
+
+      return {
+        tenantOwner:
+          new mongoose.Types.ObjectId(
+            tenantOwner
+          ),
+
+        business:
+          new mongoose.Types.ObjectId(
+            business
+          ),
+      };
+    }
+
+    // --------------------------------------------------
+    // READ / UPDATE / DELETE
+    // --------------------------------------------------
+
+    const scope = {};
+
+    if (tenantOwner) {
+      if (!isValidObjectId(tenantOwner)) {
+        throw new Error(
+          "Invalid tenant owner ID."
+        );
+      }
+
+      scope.tenantOwner =
+        new mongoose.Types.ObjectId(
+          tenantOwner
+        );
+    }
+
+    if (business) {
+      if (!isValidObjectId(business)) {
+        throw new Error(
+          "Invalid business ID."
+        );
+      }
+
+      scope.business =
+        new mongoose.Types.ObjectId(
+          business
+        );
+    }
+
+    return scope;
   }
 
-  // Admin / Manager always use their own business
-  return req.user.business?._id || req.user.business || null;
+  // ====================================================
+  // ADMIN / MANAGER
+  // ====================================================
+
+  const scope =
+    buildTenantQuery(tenant);
+
+  if (!tenant.business) {
+    throw new Error(
+      "Business is not assigned to this tenant."
+    );
+  }
+
+  scope.business =
+    tenant.business;
+
+  return scope;
 };
+
+// ======================================================
+// CREATE SLUG
+// ======================================================
 
 const createSlug = (name) => {
   return name
@@ -26,34 +168,44 @@ const createSlug = (name) => {
     .replace(/^-+|-+$/g, "");
 };
 
-// --------------------------------------------------
+// ======================================================
+// ESCAPE REGEX
+// ======================================================
+
+const escapeRegex = (value = "") => {
+  return value.replace(
+    /[.*+?^${}()|[\]\\]/g,
+    "\\$&"
+  );
+};
+
+// ======================================================
 // CREATE EXPENSE CATEGORY
-// --------------------------------------------------
+// ======================================================
 
-export const createExpenseCategory = async (req, res, next) => {
+export const createExpenseCategory = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const businessId = getBusinessId(req);
-
-    if (!businessId) {
-      return errorResponse(
-        res,
-        400,
-        "Business is required."
+    const scope =
+      await getExpenseCategoryScope(
+        req,
+        {
+          requireCreateContext: true,
+        }
       );
-    }
 
-    if (!mongoose.Types.ObjectId.isValid(businessId)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid business ID."
-      );
-    }
+    // ==================================================
+    // VALIDATE BUSINESS
+    // ==================================================
 
-    const business = await Business.findOne({
-      _id: businessId,
-      isActive: true,
-    });
+    const business =
+      await Business.findOne({
+        _id: scope.business,
+        isActive: true,
+      });
 
     if (!business) {
       return errorResponse(
@@ -63,58 +215,147 @@ export const createExpenseCategory = async (req, res, next) => {
       );
     }
 
-    const { name, description, isActive } = req.body;
+    // ==================================================
+    // GET DATA
+    // ==================================================
 
-    const slug = req.body.slug || createSlug(name);
-
-    const existingCategory = await ExpenseCategory.findOne({
-      business: businessId,
+    const {
       name,
-    });
+      description,
+      isActive,
+    } = req.body;
+
+    if (
+      !name ||
+      !name.trim()
+    ) {
+      return errorResponse(
+        res,
+        400,
+        "Expense category name is required."
+      );
+    }
+
+    const trimmedName =
+      name.trim();
+
+    const slug =
+      req.body.slug !== undefined
+        ? req.body.slug
+        : createSlug(trimmedName);
+
+    // ==================================================
+    // DUPLICATE CHECK
+    // ==================================================
+    //
+    // IMPORTANT:
+    // Check tenantOwner, NOT only business.
+    //
+    // This allows:
+    //
+    // Tenant A -> Rent
+    // Tenant B -> Rent
+    //
+    // but prevents:
+    //
+    // Tenant A -> Rent
+    // Tenant A -> Rent
+    //
+    // ==================================================
+
+    const existingCategory =
+      await ExpenseCategory.findOne({
+        tenantOwner:
+          scope.tenantOwner,
+        name: trimmedName,
+      });
 
     if (existingCategory) {
       return errorResponse(
         res,
         409,
-        "Expense category with this name already exists."
+        "Expense category with this name already exists in this tenant."
       );
     }
 
-    const category = await ExpenseCategory.create({
-      business: businessId,
-      name,
-      slug,
-      description,
-      isActive,
-      createdBy: req.user._id,
-    });
+    // ==================================================
+    // CREATE
+    // ==================================================
+
+    const category =
+      await ExpenseCategory.create({
+        tenantOwner:
+          scope.tenantOwner,
+
+        business:
+          scope.business,
+
+        name:
+          trimmedName,
+
+        slug,
+
+        description,
+
+        isActive,
+
+        createdBy:
+          req.user._id,
+      });
+
+    // ==================================================
+    // POPULATE
+    // ==================================================
+
+    const populatedCategory =
+      await ExpenseCategory.findById(
+        category._id
+      )
+        .populate(
+          "business",
+          "name"
+        )
+        .populate(
+          "createdBy",
+          "name email"
+        )
+        .populate(
+          "updatedBy",
+          "name email"
+        );
 
     return successResponse(
       res,
       201,
       "Expense category created successfully.",
-      category
+      populatedCategory
     );
   } catch (error) {
+    // MongoDB unique index protection
+    if (error?.code === 11000) {
+      return errorResponse(
+        res,
+        409,
+        "Expense category with this name already exists in this tenant."
+      );
+    }
+
     next(error);
   }
 };
 
-// --------------------------------------------------
+// ======================================================
 // GET ALL EXPENSE CATEGORIES
-// --------------------------------------------------
+// ======================================================
 
-export const getAllExpenseCategories = async (req, res, next) => {
+export const getAllExpenseCategories = async (
+  req,
+  res,
+  next
+) => {
   try {
-    const businessId = getBusinessId(req);
-
-    if (!businessId) {
-      return errorResponse(
-        res,
-        400,
-        "Business is required."
-      );
-    }
+    const scope =
+      await getExpenseCategoryScope(req);
 
     const {
       page = 1,
@@ -123,48 +364,106 @@ export const getAllExpenseCategories = async (req, res, next) => {
       isActive,
     } = req.query;
 
-    const currentPage = Math.max(Number(page), 1);
-    const currentLimit = Math.min(
-      Math.max(Number(limit), 1),
-      100
-    );
+    const currentPage =
+      Math.max(
+        Number(page) || 1,
+        1
+      );
 
-    const skip = (currentPage - 1) * currentLimit;
+    const currentLimit =
+      Math.min(
+        Math.max(
+          Number(limit) || 20,
+          1
+        ),
+        100
+      );
+
+    const skip =
+      (currentPage - 1) *
+      currentLimit;
+
+    // ==================================================
+    // BASE TENANT FILTER
+    // ==================================================
 
     const filter = {
-      business: businessId,
+      ...scope,
     };
 
+    // ==================================================
+    // SEARCH
+    // ==================================================
+
     if (search.trim()) {
+      const safeSearch =
+        escapeRegex(
+          search.trim()
+        );
+
       filter.$or = [
         {
           name: {
-            $regex: search.trim(),
+            $regex: safeSearch,
             $options: "i",
           },
         },
         {
           description: {
-            $regex: search.trim(),
+            $regex: safeSearch,
+            $options: "i",
+          },
+        },
+        {
+          slug: {
+            $regex: safeSearch,
             $options: "i",
           },
         },
       ];
     }
 
-    if (isActive !== undefined) {
-      filter.isActive = isActive === "true";
+    // ==================================================
+    // ACTIVE FILTER
+    // ==================================================
+
+    if (
+      isActive !== undefined
+    ) {
+      filter.isActive =
+        isActive === "true";
     }
 
-    const [categories, total] = await Promise.all([
+    // ==================================================
+    // FETCH
+    // ==================================================
+
+    const [
+      categories,
+      total,
+    ] = await Promise.all([
       ExpenseCategory.find(filter)
-        .populate("createdBy", "name email")
-        .populate("updatedBy", "name email")
-        .sort({ createdAt: -1 })
+        .populate(
+          "business",
+          "name"
+        )
+        .populate(
+          "createdBy",
+          "name email"
+        )
+        .populate(
+          "updatedBy",
+          "name email"
+        )
+        .sort({
+          createdAt: -1,
+        })
         .skip(skip)
         .limit(currentLimit),
 
-      ExpenseCategory.countDocuments(filter),
+      ExpenseCategory.countDocuments(
+        filter
+      ),
     ]);
 
     return successResponse(
@@ -173,11 +472,16 @@ export const getAllExpenseCategories = async (req, res, next) => {
       "Expense categories fetched successfully.",
       {
         categories,
+
         pagination: {
           total,
           page: currentPage,
           limit: currentLimit,
-          totalPages: Math.ceil(total / currentLimit),
+          totalPages:
+            Math.ceil(
+              total /
+                currentLimit
+            ),
         },
       }
     );
@@ -186,9 +490,9 @@ export const getAllExpenseCategories = async (req, res, next) => {
   }
 };
 
-// --------------------------------------------------
+// ======================================================
 // GET SINGLE EXPENSE CATEGORY
-// --------------------------------------------------
+// ======================================================
 
 export const getExpenseCategoryById = async (
   req,
@@ -196,19 +500,15 @@ export const getExpenseCategoryById = async (
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
-
-    if (!businessId) {
-      return errorResponse(
-        res,
-        400,
-        "Business is required."
+    const scope =
+      await getExpenseCategoryScope(
+        req
       );
-    }
 
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!isValidObjectId(id)) {
       return errorResponse(
         res,
         400,
@@ -216,12 +516,23 @@ export const getExpenseCategoryById = async (
       );
     }
 
-    const category = await ExpenseCategory.findOne({
-      _id: id,
-      business: businessId,
-    })
-      .populate("createdBy", "name email")
-      .populate("updatedBy", "name email");
+    const category =
+      await ExpenseCategory.findOne({
+        _id: id,
+        ...scope,
+      })
+        .populate(
+          "business",
+          "name"
+        )
+        .populate(
+          "createdBy",
+          "name email"
+        )
+        .populate(
+          "updatedBy",
+          "name email"
+        );
 
     if (!category) {
       return errorResponse(
@@ -242,9 +553,9 @@ export const getExpenseCategoryById = async (
   }
 };
 
-// --------------------------------------------------
+// ======================================================
 // UPDATE EXPENSE CATEGORY
-// --------------------------------------------------
+// ======================================================
 
 export const updateExpenseCategory = async (
   req,
@@ -252,19 +563,15 @@ export const updateExpenseCategory = async (
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
-
-    if (!businessId) {
-      return errorResponse(
-        res,
-        400,
-        "Business is required."
+    const scope =
+      await getExpenseCategoryScope(
+        req
       );
-    }
 
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!isValidObjectId(id)) {
       return errorResponse(
         res,
         400,
@@ -272,10 +579,15 @@ export const updateExpenseCategory = async (
       );
     }
 
-    const category = await ExpenseCategory.findOne({
-      _id: id,
-      business: businessId,
-    });
+    // ==================================================
+    // FIND ONLY INSIDE TENANT
+    // ==================================================
+
+    const category =
+      await ExpenseCategory.findOne({
+        _id: id,
+        ...scope,
+      });
 
     if (!category) {
       return errorResponse(
@@ -285,60 +597,168 @@ export const updateExpenseCategory = async (
       );
     }
 
-    const { name, description, isActive } = req.body;
+    const {
+      name,
+      description,
+      isActive,
+    } = req.body;
 
-    if (name && name !== category.name) {
-      const duplicate = await ExpenseCategory.findOne({
-        business: businessId,
-        name,
-        _id: { $ne: id },
-      });
+    // ==================================================
+    // NAME
+    // ==================================================
 
-      if (duplicate) {
+    if (
+      name !== undefined
+    ) {
+      const trimmedName =
+        name.trim();
+
+      if (!trimmedName) {
         return errorResponse(
           res,
-          409,
-          "Another expense category with this name already exists."
+          400,
+          "Expense category name cannot be empty."
         );
       }
 
-      category.name = name;
+      if (
+        trimmedName !==
+        category.name
+      ) {
+        const duplicate =
+          await ExpenseCategory.findOne({
+            tenantOwner:
+              scope.tenantOwner,
 
-      // Automatically regenerate slug
+            name:
+              trimmedName,
+
+            _id: {
+              $ne: id,
+            },
+          });
+
+        if (duplicate) {
+          return errorResponse(
+            res,
+            409,
+            "Another expense category with this name already exists in this tenant."
+          );
+        }
+
+        category.name =
+          trimmedName;
+
+        // Automatically regenerate
+        // slug if custom slug was not sent.
+        if (
+          req.body.slug ===
+          undefined
+        ) {
+          category.slug =
+            createSlug(
+              trimmedName
+            );
+        }
+      }
+    }
+
+    // ==================================================
+    // SLUG
+    // ==================================================
+
+    if (
+      req.body.slug !==
+      undefined
+    ) {
       category.slug =
-        req.body.slug || createSlug(name);
+        req.body.slug;
     }
 
-    if (req.body.slug !== undefined) {
-      category.slug = req.body.slug;
+    // ==================================================
+    // DESCRIPTION
+    // ==================================================
+
+    if (
+      description !==
+      undefined
+    ) {
+      category.description =
+        description;
     }
 
-    if (description !== undefined) {
-      category.description = description;
+    // ==================================================
+    // ACTIVE STATUS
+    // ==================================================
+
+    if (
+      isActive !==
+      undefined
+    ) {
+      category.isActive =
+        isActive;
     }
 
-    if (isActive !== undefined) {
-      category.isActive = isActive;
-    }
+    // ==================================================
+    // AUDIT
+    // ==================================================
 
-    category.updatedBy = req.user._id;
+    category.updatedBy =
+      req.user._id;
+
+    // ==================================================
+    // SAVE
+    // ==================================================
 
     await category.save();
+
+    // ==================================================
+    // POPULATE
+    // ==================================================
+
+    const updatedCategory =
+      await ExpenseCategory.findById(
+        category._id
+      )
+        .populate(
+          "business",
+          "name"
+        )
+        .populate(
+          "createdBy",
+          "name email"
+        )
+        .populate(
+          "updatedBy",
+          "name email"
+        );
 
     return successResponse(
       res,
       200,
       "Expense category updated successfully.",
-      category
+      updatedCategory
     );
   } catch (error) {
+    if (error?.code === 11000) {
+      return errorResponse(
+        res,
+        409,
+        "Expense category with this name already exists in this tenant."
+      );
+    }
+
     next(error);
   }
 };
 
-// --------------------------------------------------
+// ======================================================
 // DELETE EXPENSE CATEGORY
-// --------------------------------------------------
+// ======================================================
+//
+// Soft delete.
+// Existing expenses remain valid.
+// ======================================================
 
 export const deleteExpenseCategory = async (
   req,
@@ -346,19 +766,15 @@ export const deleteExpenseCategory = async (
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
-
-    if (!businessId) {
-      return errorResponse(
-        res,
-        400,
-        "Business is required."
+    const scope =
+      await getExpenseCategoryScope(
+        req
       );
-    }
 
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!isValidObjectId(id)) {
       return errorResponse(
         res,
         400,
@@ -366,10 +782,11 @@ export const deleteExpenseCategory = async (
       );
     }
 
-    const category = await ExpenseCategory.findOne({
-      _id: id,
-      business: businessId,
-    });
+    const category =
+      await ExpenseCategory.findOne({
+        _id: id,
+        ...scope,
+      });
 
     if (!category) {
       return errorResponse(
@@ -379,9 +796,19 @@ export const deleteExpenseCategory = async (
       );
     }
 
-    // Soft delete
-    category.isActive = false;
-    category.updatedBy = req.user._id;
+    if (!category.isActive) {
+      return errorResponse(
+        res,
+        400,
+        "Expense category is already inactive."
+      );
+    }
+
+    category.isActive =
+      false;
+
+    category.updatedBy =
+      req.user._id;
 
     await category.save();
 
@@ -396,9 +823,9 @@ export const deleteExpenseCategory = async (
   }
 };
 
-// --------------------------------------------------
+// ======================================================
 // RESTORE EXPENSE CATEGORY
-// --------------------------------------------------
+// ======================================================
 
 export const restoreExpenseCategory = async (
   req,
@@ -406,19 +833,15 @@ export const restoreExpenseCategory = async (
   next
 ) => {
   try {
-    const businessId = getBusinessId(req);
-
-    if (!businessId) {
-      return errorResponse(
-        res,
-        400,
-        "Business is required."
+    const scope =
+      await getExpenseCategoryScope(
+        req
       );
-    }
 
-    const { id } = req.params;
+    const { id } =
+      req.params;
 
-    if (!mongoose.Types.ObjectId.isValid(id)) {
+    if (!isValidObjectId(id)) {
       return errorResponse(
         res,
         400,
@@ -426,10 +849,11 @@ export const restoreExpenseCategory = async (
       );
     }
 
-    const category = await ExpenseCategory.findOne({
-      _id: id,
-      business: businessId,
-    });
+    const category =
+      await ExpenseCategory.findOne({
+        _id: id,
+        ...scope,
+      });
 
     if (!category) {
       return errorResponse(
@@ -439,8 +863,19 @@ export const restoreExpenseCategory = async (
       );
     }
 
-    category.isActive = true;
-    category.updatedBy = req.user._id;
+    if (category.isActive) {
+      return errorResponse(
+        res,
+        400,
+        "Expense category is already active."
+      );
+    }
+
+    category.isActive =
+      true;
+
+    category.updatedBy =
+      req.user._id;
 
     await category.save();
 

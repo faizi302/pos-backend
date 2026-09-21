@@ -22,26 +22,19 @@ import {
 
 const SUPER_ADMIN_ROLE = "super-admin";
 const ADMIN_ROLE = "admin";
-
+const MANAGER_ROLE = "manager";
 
 // =====================================================
 // ROLE HELPERS
 // =====================================================
 
 const getRoleSlug = (user) => {
-    return (
-        user?.role?.slug ||
-        user?.role ||
-        null
-    );
+    return user?.role?.slug || user?.role || null;
 };
 
 const isSuperAdmin = (user) => {
-    return (
-        getRoleSlug(user) === SUPER_ADMIN_ROLE
-    );
+    return getRoleSlug(user) === SUPER_ADMIN_ROLE;
 };
-
 
 // =====================================================
 // PARSE NUMBER
@@ -65,18 +58,13 @@ const parseNumber = (value) => {
     return number;
 };
 
-
 // =====================================================
 // ESCAPE REGEX
 // =====================================================
 
 const escapeRegex = (value) => {
-    return value.replace(
-        /[.*+?^${}()|[\]\\]/g,
-        "\\$&"
-    );
+    return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 };
-
 
 // =====================================================
 // VALIDATE DATE
@@ -96,24 +84,11 @@ const parseDate = (value) => {
     return date;
 };
 
-
 // =====================================================
 // GET SUPER ADMIN TARGET TENANT
 // =====================================================
-//
-// Super Admin can work with a specific Admin tenant.
-//
-// Example:
-//
-// {
-//   "tenantOwner": "ADMIN_USER_ID"
-// }
-//
-// =====================================================
 
-const getSuperAdminTenant = async (
-    tenantOwnerId
-) => {
+const getSuperAdminTenant = async (tenantOwnerId) => {
     if (!tenantOwnerId) {
         throw new Error(
             "Tenant owner is required for Super Admin."
@@ -121,14 +96,10 @@ const getSuperAdminTenant = async (
     }
 
     if (!isValidObjectId(tenantOwnerId)) {
-        throw new Error(
-            "Invalid tenant owner ID."
-        );
+        throw new Error("Invalid tenant owner ID.");
     }
 
-    const admin = await User.findById(
-        tenantOwnerId
-    )
+    const admin = await User.findById(tenantOwnerId)
         .select(
             "_id name email role business businessType status"
         )
@@ -138,14 +109,10 @@ const getSuperAdminTenant = async (
         });
 
     if (!admin) {
-        throw new Error(
-            "Tenant owner Admin not found."
-        );
+        throw new Error("Tenant owner Admin not found.");
     }
 
-    const roleSlug =
-        admin.role?.slug ||
-        admin.role;
+    const roleSlug = admin.role?.slug || admin.role;
 
     if (roleSlug !== ADMIN_ROLE) {
         throw new Error(
@@ -172,6 +139,7 @@ const getSuperAdminTenant = async (
     }
 
     return {
+        isSuperAdmin: true,
         tenantOwner: admin._id,
         business: admin.business,
         businessType: admin.businessType,
@@ -179,36 +147,20 @@ const getSuperAdminTenant = async (
     };
 };
 
-
 // =====================================================
 // RESOLVE TENANT CONTEXT
 // =====================================================
-//
-// SUPER ADMIN
-// → tenantOwner comes from body/query
-//
-// ADMIN
-// → tenantOwner = Admin._id
-//
-// MANAGER
-// → tenantOwner = Admin._id
-//
-// =====================================================
 
-const resolveTenant = async (
-    req,
-    options = {}
-) => {
+const resolveTenant = async (req, options = {}) => {
     const {
         requireTenantForSuperAdmin = false,
     } = options;
 
-    const tenantContext =
-        await getTenantContext(req);
+    const tenantContext = await getTenantContext(req);
 
-    // -------------------------------------------------
+    // =================================================
     // SUPER ADMIN
-    // -------------------------------------------------
+    // =================================================
 
     if (tenantContext.isSuperAdmin) {
         const tenantOwnerId =
@@ -225,8 +177,8 @@ const resolveTenant = async (
             );
         }
 
-        // If Super Admin is viewing all data
-        // without selecting a tenant.
+        // Super Admin without selected tenant
+        // can view all registers.
         if (!tenantOwnerId) {
             return {
                 ...tenantContext,
@@ -237,30 +189,69 @@ const resolveTenant = async (
             };
         }
 
-        return getSuperAdminTenant(
-            tenantOwnerId
-        );
+        return getSuperAdminTenant(tenantOwnerId);
     }
 
-    // -------------------------------------------------
+    // =================================================
     // ADMIN / MANAGER
-    // -------------------------------------------------
-
+    // =================================================
+    //
+    // getTenantContext() is responsible for resolving:
+    //
+    // Admin:
+    //   tenantOwner = Admin
+    //   business = Admin business
+    //   businessType = Admin businessType
+    //
+    // Manager:
+    //   tenantOwner = Manager's Admin
+    //   business = Admin business
+    //   businessType = Admin businessType
+    //
     return tenantContext;
 };
 
+// =====================================================
+// BUILD REGISTER TENANT QUERY
+// =====================================================
+
+const buildRegisterTenantQuery = (tenantContext) => {
+    // -----------------------------------------------
+    // SUPER ADMIN WITHOUT SELECTED TENANT
+    // -----------------------------------------------
+
+    if (
+        tenantContext.isSuperAdmin &&
+        !tenantContext.tenantOwner
+    ) {
+        return {};
+    }
+
+    // -----------------------------------------------
+    // TENANT REQUIRED
+    // -----------------------------------------------
+
+    if (!tenantContext.tenantOwner) {
+        throw new Error(
+            "Tenant owner is required."
+        );
+    }
+
+    return {
+        tenantOwner: tenantContext.tenantOwner,
+    };
+};
 
 // =====================================================
-// BUILD REGISTER QUERY
+// BUILD TRANSACTION TENANT QUERY
 // =====================================================
 
-const buildRegisterTenantQuery = (
-    tenantContext
-) => {
-    if (tenantContext.isSuperAdmin) {
-        if (!tenantContext.tenantOwner) {
-            return {};
-        }
+const buildTransactionTenantQuery = (tenantContext) => {
+    if (
+        tenantContext.isSuperAdmin &&
+        !tenantContext.tenantOwner
+    ) {
+        return {};
     }
 
     if (!tenantContext.tenantOwner) {
@@ -270,97 +261,90 @@ const buildRegisterTenantQuery = (
     }
 
     return {
-        tenantOwner:
-            tenantContext.tenantOwner,
+        tenantOwner: tenantContext.tenantOwner,
     };
 };
-
-
-// =====================================================
-// BUILD TRANSACTION QUERY
-// =====================================================
-
-const buildTransactionTenantQuery = (
-    tenantContext
-) => {
-    if (tenantContext.isSuperAdmin) {
-        if (!tenantContext.tenantOwner) {
-            return {};
-        }
-    }
-
-    if (!tenantContext.tenantOwner) {
-        throw new Error(
-            "Tenant owner is required."
-        );
-    }
-
-    return {
-        tenantOwner:
-            tenantContext.tenantOwner,
-    };
-};
-
 
 // =====================================================
 // GENERATE REGISTER NUMBER
 // =====================================================
 //
-// Register number is unique per tenant.
+// IMPORTANT:
+// Register numbers are generated PER TENANT.
 //
 // Tenant A:
-// REG-000001
+//   REG-000001
 //
 // Tenant B:
-// REG-000001
+//   REG-000001
+//
+// This is valid because the database uniqueness is:
+//
+// tenantOwner + registerNumber
 //
 // =====================================================
 
-const generateRegisterNumber = async (
-    tenantOwner
-) => {
+const generateRegisterNumber = async (tenantOwner) => {
     if (!tenantOwner) {
         throw new Error(
             "Tenant owner is required to generate register number."
         );
     }
 
-    const lastRegister =
-        await CashRegister.findOne({
-            tenantOwner,
-        })
-            .sort({
-                createdAt: -1,
-            })
-            .select("registerNumber");
+    const tenantObjectId =
+        new mongoose.Types.ObjectId(tenantOwner);
 
-    let nextNumber = 1;
+    const result = await CashRegister.aggregate([
+        {
+            $match: {
+                tenantOwner: tenantObjectId,
+            },
+        },
 
-    if (lastRegister?.registerNumber) {
-        const match =
-            lastRegister.registerNumber.match(
-                /\d+$/
-            );
+        {
+            $project: {
+                num: {
+                    $convert: {
+                        input: {
+                            $arrayElemAt: [
+                                {
+                                    $split: [
+                                        "$registerNumber",
+                                        "-",
+                                    ],
+                                },
+                                1,
+                            ],
+                        },
+                        to: "int",
+                        onError: 0,
+                        onNull: 0,
+                    },
+                },
+            },
+        },
 
-        if (match) {
-            nextNumber =
-                Number(match[0]) + 1;
-        }
-    }
+        {
+            $group: {
+                _id: null,
+                maxNum: {
+                    $max: "$num",
+                },
+            },
+        },
+    ]);
 
-    return `REG-${String(
-        nextNumber
-    ).padStart(6, "0")}`;
+    const nextNumber =
+        (result[0]?.maxNum || 0) + 1;
+
+    return `REG-${String(nextNumber).padStart(6, "0")}`;
 };
-
 
 // =====================================================
 // CALCULATE EXPECTED BALANCE
 // =====================================================
 
-const calculateExpectedBalance = (
-    register
-) => {
+const calculateExpectedBalance = (register) => {
     return (
         register.openingBalance +
         register.cashSales +
@@ -371,35 +355,26 @@ const calculateExpectedBalance = (
     );
 };
 
-
 // =====================================================
 // REFRESH REGISTER TOTALS
 // =====================================================
-//
-// Reads only transactions belonging to
-// the same tenant.
-//
-// =====================================================
 
-const refreshRegisterTotals = async (
-    register
-) => {
-    const tenantOwner =
-        register.tenantOwner;
-
-    const businessId =
-        register.business;
-
-    const openedAt =
-        register.openedAt;
-
+const refreshRegisterTotals = async (register) => {
+    const tenantOwner = register.tenantOwner;
+    const businessId = register.business;
+    const openedAt = register.openedAt;
     const endDate =
-        register.closedAt ||
-        new Date();
+        register.closedAt || new Date();
 
     if (!tenantOwner) {
         throw new Error(
             "Register tenant owner is missing."
+        );
+    }
+
+    if (!businessId) {
+        throw new Error(
+            "Register business is missing."
         );
     }
 
@@ -413,24 +388,18 @@ const refreshRegisterTotals = async (
             businessId
         );
 
-    // -------------------------------------------------
+    // =================================================
     // CASH SALES
-    // -------------------------------------------------
+    // =================================================
 
     const salesResult =
         await SalePayment.aggregate([
             {
                 $match: {
-                    tenantOwner:
-                        tenantObjectId,
-
-                    business:
-                        businessObjectId,
-
+                    tenantOwner: tenantObjectId,
+                    business: businessObjectId,
                     status: "completed",
-
                     paymentMethod: "cash",
-
                     paymentDate: {
                         $gte: openedAt,
                         $lte: endDate,
@@ -441,7 +410,6 @@ const refreshRegisterTotals = async (
             {
                 $group: {
                     _id: null,
-
                     total: {
                         $sum: "$amount",
                     },
@@ -449,24 +417,18 @@ const refreshRegisterTotals = async (
             },
         ]);
 
-    // -------------------------------------------------
+    // =================================================
     // CASH EXPENSES
-    // -------------------------------------------------
+    // =================================================
 
     const expenseResult =
         await Expense.aggregate([
             {
                 $match: {
-                    tenantOwner:
-                        tenantObjectId,
-
-                    business:
-                        businessObjectId,
-
+                    tenantOwner: tenantObjectId,
+                    business: businessObjectId,
                     status: "paid",
-
                     paymentMethod: "cash",
-
                     expenseDate: {
                         $gte: openedAt,
                         $lte: endDate,
@@ -477,7 +439,6 @@ const refreshRegisterTotals = async (
             {
                 $group: {
                     _id: null,
-
                     total: {
                         $sum: "$amount",
                     },
@@ -485,28 +446,21 @@ const refreshRegisterTotals = async (
             },
         ]);
 
-    // -------------------------------------------------
+    // =================================================
     // CASH REFUNDS
-    // -------------------------------------------------
+    // =================================================
 
     const refundResult =
         await SaleReturn.aggregate([
             {
                 $match: {
-                    tenantOwner:
-                        tenantObjectId,
-
-                    business:
-                        businessObjectId,
-
+                    tenantOwner: tenantObjectId,
+                    business: businessObjectId,
                     status: "completed",
-
                     refundStatus: "refunded",
-
                     refundAmount: {
                         $gt: 0,
                     },
-
                     returnDate: {
                         $gte: openedAt,
                         $lte: endDate,
@@ -517,13 +471,16 @@ const refreshRegisterTotals = async (
             {
                 $group: {
                     _id: null,
-
                     total: {
                         $sum: "$refundAmount",
                     },
                 },
             },
         ]);
+
+    // =================================================
+    // UPDATE TOTALS
+    // =================================================
 
     register.cashSales =
         salesResult[0]?.total || 0;
@@ -535,15 +492,12 @@ const refreshRegisterTotals = async (
         refundResult[0]?.total || 0;
 
     register.expectedClosingBalance =
-        calculateExpectedBalance(
-            register
-        );
+        calculateExpectedBalance(register);
 
     await register.save();
 
     return register;
 };
-
 
 // =====================================================
 // OPEN CASH REGISTER
@@ -555,15 +509,18 @@ export const openCashRegister = async (
     next
 ) => {
     try {
-        const tenant =
-            await resolveTenant(req, {
-                requireTenantForSuperAdmin: true,
-            });
+        const tenant = await resolveTenant(req, {
+            requireTenantForSuperAdmin: true,
+        });
 
         const {
             tenantOwner,
             business,
         } = tenant;
+
+        // =================================================
+        // TENANT VALIDATION
+        // =================================================
 
         if (!tenantOwner) {
             return errorResponse(
@@ -581,9 +538,9 @@ export const openCashRegister = async (
             );
         }
 
-        // -------------------------------------------------
-        // VALIDATE OPENING BALANCE
-        // -------------------------------------------------
+        // =================================================
+        // OPENING BALANCE
+        // =================================================
 
         const openingBalance =
             parseNumber(
@@ -601,9 +558,9 @@ export const openCashRegister = async (
             );
         }
 
-        // -------------------------------------------------
+        // =================================================
         // ONE OPEN REGISTER PER TENANT
-        // -------------------------------------------------
+        // =================================================
 
         const existingRegister =
             await CashRegister.findOne({
@@ -619,42 +576,25 @@ export const openCashRegister = async (
             );
         }
 
-        // -------------------------------------------------
-        // REGISTER NUMBER
-        // -------------------------------------------------
+        // =================================================
+        // REGISTER USER
+        // =================================================
 
-        const registerNumber =
-            await generateRegisterNumber(
-                tenantOwner
-            );
+        let registerUser = req.user._id;
 
-        // -------------------------------------------------
-        // USER
-        // -------------------------------------------------
+        // Super Admin may explicitly select
+        // Admin/Manager as register user.
         //
-        // Normal Admin/Manager:
-        // current logged-in user opens register.
+        // Normal Admin/Manager cannot override
+        // req.user through request body.
         //
-        // Super Admin:
-        // openedBy should remain Super Admin,
-        // while user can optionally be supplied.
-        //
-        // For normal tenant users we NEVER trust
-        // req.body.user.
-        //
-        // -------------------------------------------------
-
-        let registerUser =
-            req.user._id;
 
         if (
             isSuperAdmin(req.user) &&
             req.body.user
         ) {
             if (
-                !isValidObjectId(
-                    req.body.user
-                )
+                !isValidObjectId(req.body.user)
             ) {
                 return errorResponse(
                     res,
@@ -688,11 +628,17 @@ export const openCashRegister = async (
                 targetUser.role?.slug ||
                 targetUser.role;
 
-            // User must belong to target Admin tenant.
-            if (targetRole === "manager") {
+            // ---------------------------------------------
+            // MANAGER
+            // ---------------------------------------------
+
+            if (
+                targetRole === MANAGER_ROLE
+            ) {
                 if (
-                    targetUser.createdBy?.toString() !==
-                    tenantOwner.toString()
+                    !targetUser.createdBy ||
+                    targetUser.createdBy.toString() !==
+                        tenantOwner.toString()
                 ) {
                     return errorResponse(
                         res,
@@ -700,8 +646,14 @@ export const openCashRegister = async (
                         "Register user does not belong to the selected tenant."
                     );
                 }
-            } else if (
-                targetRole === "admin"
+            }
+
+            // ---------------------------------------------
+            // ADMIN
+            // ---------------------------------------------
+
+            else if (
+                targetRole === ADMIN_ROLE
             ) {
                 if (
                     targetUser._id.toString() !==
@@ -713,7 +665,13 @@ export const openCashRegister = async (
                         "Register user does not belong to the selected tenant."
                     );
                 }
-            } else {
+            }
+
+            // ---------------------------------------------
+            // OTHER ROLES
+            // ---------------------------------------------
+
+            else {
                 return errorResponse(
                     res,
                     403,
@@ -725,42 +683,108 @@ export const openCashRegister = async (
                 targetUser._id;
         }
 
-        // -------------------------------------------------
+        // =================================================
         // CREATE REGISTER
-        // -------------------------------------------------
+        // =================================================
+        //
+        // The database compound index:
+        //
+        // tenantOwner + registerNumber
+        //
+        // guarantees uniqueness per tenant.
+        //
+        // Retry protects against two requests arriving
+        // at exactly the same time.
+        //
 
-        const register =
-            await CashRegister.create({
-                tenantOwner,
+        let register = null;
 
-                business,
+        let attempts = 0;
 
-                user: registerUser,
+        const maxAttempts = 5;
 
-                registerNumber,
+        while (
+            attempts < maxAttempts
+        ) {
+            attempts++;
 
-                openingBalance,
+            const registerNumber =
+                await generateRegisterNumber(
+                    tenantOwner
+                );
 
-                cashSales: 0,
+            try {
+                register =
+                    await CashRegister.create({
+                        tenantOwner,
+                        business,
+                        user: registerUser,
+                        registerNumber,
+                        openingBalance,
 
-                cashExpenses: 0,
+                        cashSales: 0,
+                        cashExpenses: 0,
+                        cashRefunds: 0,
+                        cashIn: 0,
+                        cashOut: 0,
 
-                cashRefunds: 0,
+                        expectedClosingBalance:
+                            openingBalance,
 
-                cashIn: 0,
+                        notes:
+                            typeof req.body.notes ===
+                                "string"
+                                ? req.body.notes.trim()
+                                : "",
 
-                cashOut: 0,
+                        openedBy:
+                            req.user._id,
+                    });
 
-                expectedClosingBalance:
-                    openingBalance,
+                break;
+            } catch (err) {
+                // Retry only duplicate-key errors.
+                if (
+                    err.code === 11000 &&
+                    attempts < maxAttempts
+                ) {
+                    continue;
+                }
 
-                notes:
-                    req.body.notes?.trim() ||
-                    "",
+                throw err;
+            }
+        }
 
-                openedBy:
-                    req.user._id,
-            });
+        // =================================================
+        // FAILED TO CREATE
+        // =================================================
+
+        if (!register) {
+            return errorResponse(
+                res,
+                500,
+                "Failed to generate a unique register number after several attempts."
+            );
+        }
+
+        // =================================================
+        // RESPONSE
+        // =================================================
+
+        await register.populate([
+            {
+                path: "business",
+                select: "name",
+            },
+            {
+                path: "user",
+                select: "name email phone",
+            },
+            {
+                path: "openedBy",
+                select: "name email",
+            },
+        ]);
 
         return successResponse(
             res,
@@ -769,6 +793,10 @@ export const openCashRegister = async (
             register
         );
     } catch (error) {
+        // =================================================
+        // DUPLICATE KEY
+        // =================================================
+
         if (error.code === 11000) {
             return errorResponse(
                 res,
@@ -781,73 +809,70 @@ export const openCashRegister = async (
     }
 };
 
-
 // =====================================================
 // GET CURRENT OPEN REGISTER
 // =====================================================
 
-export const getCurrentCashRegister =
-    async (
-        req,
-        res,
-        next
-    ) => {
-        try {
-            const tenant =
-                await resolveTenant(req);
+export const getCurrentCashRegister = async (
+    req,
+    res,
+    next
+) => {
+    try {
+        const tenant =
+            await resolveTenant(req);
 
-            const filter =
-                buildRegisterTenantQuery(
-                    tenant
-                );
-
-            filter.status = "open";
-
-            const register =
-                await CashRegister.findOne(
-                    filter
-                )
-                    .populate(
-                        "business",
-                        "name"
-                    )
-                    .populate(
-                        "user",
-                        "name email phone"
-                    )
-                    .populate(
-                        "openedBy",
-                        "name email"
-                    )
-                    .populate(
-                        "closedBy",
-                        "name email"
-                    );
-
-            if (!register) {
-                return errorResponse(
-                    res,
-                    404,
-                    "No open cash register found."
-                );
-            }
-
-            const refreshedRegister =
-                await refreshRegisterTotals(
-                    register
-                );
-
-            return successResponse(
-                res,
-                200,
-                "Current cash register fetched successfully.",
-                refreshedRegister
+        const filter =
+            buildRegisterTenantQuery(
+                tenant
             );
-        } catch (error) {
-            next(error);
-        }
-    };
 
+        filter.status = "open";
+
+        const register =
+            await CashRegister.findOne(
+                filter
+            )
+                .populate(
+                    "business",
+                    "name"
+                )
+                .populate(
+                    "user",
+                    "name email phone"
+                )
+                .populate(
+                    "openedBy",
+                    "name email"
+                )
+                .populate(
+                    "closedBy",
+                    "name email"
+                );
+
+        if (!register) {
+            return errorResponse(
+                res,
+                404,
+                "No open cash register found."
+            );
+        }
+
+        const refreshedRegister =
+            await refreshRegisterTotals(
+                register
+            );
+
+        return successResponse(
+            res,
+            200,
+            "Current cash register fetched successfully.",
+            refreshedRegister
+        );
+    } catch (error) {
+        next(error);
+    }
+};
 
 // =====================================================
 // ADD CASH IN
@@ -902,7 +927,11 @@ export const addCashIn = async (
 
         register.cashIn += amount;
 
-        if (req.body.notes) {
+        if (
+            typeof req.body.notes ===
+                "string" &&
+            req.body.notes.trim()
+        ) {
             register.notes =
                 req.body.notes.trim();
         }
@@ -924,7 +953,6 @@ export const addCashIn = async (
         next(error);
     }
 };
-
 
 // =====================================================
 // ADD CASH OUT
@@ -979,7 +1007,11 @@ export const addCashOut = async (
 
         register.cashOut += amount;
 
-        if (req.body.notes) {
+        if (
+            typeof req.body.notes ===
+                "string" &&
+            req.body.notes.trim()
+        ) {
             register.notes =
                 req.body.notes.trim();
         }
@@ -1012,7 +1044,6 @@ export const addCashOut = async (
         next(error);
     }
 };
-
 
 // =====================================================
 // CLOSE CASH REGISTER
@@ -1049,18 +1080,18 @@ export const closeCashRegister = async (
             );
         }
 
-        // -------------------------------------------------
+        // =================================================
         // REFRESH TRANSACTION TOTALS
-        // -------------------------------------------------
+        // =================================================
 
         register =
             await refreshRegisterTotals(
                 register
             );
 
-        // -------------------------------------------------
+        // =================================================
         // ACTUAL CLOSING BALANCE
-        // -------------------------------------------------
+        // =================================================
 
         const actualClosingBalance =
             parseNumber(
@@ -1078,15 +1109,14 @@ export const closeCashRegister = async (
             );
         }
 
-        // -------------------------------------------------
-        // CLOSE
-        // -------------------------------------------------
+        // =================================================
+        // CLOSE REGISTER
+        // =================================================
 
         register.closedAt =
             new Date();
 
-        register.status =
-            "closed";
+        register.status = "closed";
 
         register.actualClosingBalance =
             actualClosingBalance;
@@ -1103,7 +1133,11 @@ export const closeCashRegister = async (
         register.closedBy =
             req.user._id;
 
-        if (req.body.notes) {
+        if (
+            typeof req.body.notes ===
+                "string" &&
+            req.body.notes.trim()
+        ) {
             register.notes =
                 req.body.notes.trim();
         }
@@ -1140,326 +1174,309 @@ export const closeCashRegister = async (
     }
 };
 
-
 // =====================================================
 // GET ALL CASH REGISTERS
 // =====================================================
 
-export const getAllCashRegisters =
-    async (
-        req,
-        res,
-        next
-    ) => {
-        try {
-            const tenant =
-                await resolveTenant(req);
+export const getAllCashRegisters = async (
+    req,
+    res,
+    next
+) => {
+    try {
+        const tenant =
+            await resolveTenant(req);
 
-            const {
-                page = 1,
-                limit = 20,
-                status,
-                user,
-                startDate,
-                endDate,
-                search,
-            } = req.query;
+        const {
+            page = 1,
+            limit = 20,
+            status,
+            user,
+            startDate,
+            endDate,
+            search,
+        } = req.query;
 
-            const filter =
-                buildRegisterTenantQuery(
-                    tenant
-                );
+        const filter =
+            buildRegisterTenantQuery(
+                tenant
+            );
 
-            // -------------------------------------------------
-            // SUPER ADMIN BUSINESS FILTER
-            // -------------------------------------------------
+        // =================================================
+        // SUPER ADMIN BUSINESS FILTER
+        // =================================================
 
+        if (
+            tenant.isSuperAdmin &&
+            !tenant.tenantOwner &&
+            req.query.business
+        ) {
             if (
-                tenant.isSuperAdmin &&
-                !tenant.tenantOwner &&
-                req.query.business
-            ) {
-                if (
-                    !isValidObjectId(
-                        req.query.business
-                    )
-                ) {
-                    return errorResponse(
-                        res,
-                        400,
-                        "Invalid business ID."
-                    );
-                }
-
-                filter.business =
-                    req.query.business;
-            }
-
-            // -------------------------------------------------
-            // STATUS
-            // -------------------------------------------------
-
-            if (status) {
-                if (
-                    ![
-                        "open",
-                        "closed",
-                    ].includes(status)
-                ) {
-                    return errorResponse(
-                        res,
-                        400,
-                        "Invalid register status."
-                    );
-                }
-
-                filter.status = status;
-            }
-
-            // -------------------------------------------------
-            // USER
-            // -------------------------------------------------
-
-            if (user) {
-                if (
-                    !isValidObjectId(user)
-                ) {
-                    return errorResponse(
-                        res,
-                        400,
-                        "Invalid user ID."
-                    );
-                }
-
-                filter.user = user;
-            }
-
-            // -------------------------------------------------
-            // START DATE
-            // -------------------------------------------------
-
-            if (startDate) {
-                const parsedStartDate =
-                    parseDate(startDate);
-
-                if (!parsedStartDate) {
-                    return errorResponse(
-                        res,
-                        400,
-                        "Invalid start date."
-                    );
-                }
-
-                filter.openedAt = {
-                    $gte:
-                        parsedStartDate,
-                };
-            }
-
-            // -------------------------------------------------
-            // END DATE
-            // -------------------------------------------------
-
-            if (endDate) {
-                const parsedEndDate =
-                    parseDate(endDate);
-
-                if (!parsedEndDate) {
-                    return errorResponse(
-                        res,
-                        400,
-                        "Invalid end date."
-                    );
-                }
-
-                parsedEndDate.setHours(
-                    23,
-                    59,
-                    59,
-                    999
-                );
-
-                filter.openedAt = {
-                    ...(filter.openedAt ||
-                        {}),
-                    $lte:
-                        parsedEndDate,
-                };
-            }
-
-            // -------------------------------------------------
-            // SEARCH
-            // -------------------------------------------------
-
-            if (search?.trim()) {
-                filter.registerNumber = {
-                    $regex:
-                        escapeRegex(
-                            search.trim()
-                        ),
-                    $options: "i",
-                };
-            }
-
-            // -------------------------------------------------
-            // PAGINATION
-            // -------------------------------------------------
-
-            const pageNumber = Math.max(
-                Number(page) || 1,
-                1
-            );
-
-            const limitNumber = Math.min(
-                Math.max(
-                    Number(limit) || 20,
-                    1
-                ),
-                100
-            );
-
-            const skip =
-                (pageNumber - 1) *
-                limitNumber;
-
-            // -------------------------------------------------
-            // QUERY
-            // -------------------------------------------------
-
-            const [
-                registers,
-                total,
-            ] = await Promise.all([
-                CashRegister.find(
-                    filter
+                !isValidObjectId(
+                    req.query.business
                 )
-                    .populate(
-                        "business",
-                        "name"
-                    )
-                    .populate(
-                        "user",
-                        "name email phone"
-                    )
-                    .populate(
-                        "openedBy",
-                        "name email"
-                    )
-                    .populate(
-                        "closedBy",
-                        "name email"
-                    )
-                    .sort({
-                        openedAt: -1,
-                    })
-                    .skip(skip)
-                    .limit(limitNumber),
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Invalid business ID."
+                );
+            }
 
-                CashRegister.countDocuments(
-                    filter
-                ),
-            ]);
-
-            return successResponse(
-                res,
-                200,
-                "Cash registers fetched successfully.",
-                {
-                    registers,
-
-                    pagination: {
-                        total,
-
-                        page:
-                            pageNumber,
-
-                        limit:
-                            limitNumber,
-
-                        totalPages:
-                            Math.ceil(
-                                total /
-                                    limitNumber
-                            ),
-                    },
-                }
-            );
-        } catch (error) {
-            next(error);
+            filter.business =
+                req.query.business;
         }
-    };
 
+        // =================================================
+        // STATUS
+        // =================================================
+
+        if (status) {
+            if (
+                !["open", "closed"].includes(
+                    status
+                )
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Invalid register status."
+                );
+            }
+
+            filter.status = status;
+        }
+
+        // =================================================
+        // USER
+        // =================================================
+
+        if (user) {
+            if (
+                !isValidObjectId(user)
+            ) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Invalid user ID."
+                );
+            }
+
+            filter.user = user;
+        }
+
+        // =================================================
+        // START DATE
+        // =================================================
+
+        if (startDate) {
+            const parsedStartDate =
+                parseDate(startDate);
+
+            if (!parsedStartDate) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Invalid start date."
+                );
+            }
+
+            filter.openedAt = {
+                $gte: parsedStartDate,
+            };
+        }
+
+        // =================================================
+        // END DATE
+        // =================================================
+
+        if (endDate) {
+            const parsedEndDate =
+                parseDate(endDate);
+
+            if (!parsedEndDate) {
+                return errorResponse(
+                    res,
+                    400,
+                    "Invalid end date."
+                );
+            }
+
+            parsedEndDate.setHours(
+                23,
+                59,
+                59,
+                999
+            );
+
+            filter.openedAt = {
+                ...(filter.openedAt || {}),
+                $lte: parsedEndDate,
+            };
+        }
+
+        // =================================================
+        // SEARCH
+        // =================================================
+
+        if (search?.trim()) {
+            filter.registerNumber = {
+                $regex: escapeRegex(
+                    search.trim()
+                ),
+                $options: "i",
+            };
+        }
+
+        // =================================================
+        // PAGINATION
+        // =================================================
+
+        const pageNumber = Math.max(
+            Number(page) || 1,
+            1
+        );
+
+        const limitNumber = Math.min(
+            Math.max(
+                Number(limit) || 20,
+                1
+            ),
+            100
+        );
+
+        const skip =
+            (pageNumber - 1) *
+            limitNumber;
+
+        // =================================================
+        // DATABASE QUERY
+        // =================================================
+
+        const [
+            registers,
+            total,
+        ] = await Promise.all([
+            CashRegister.find(filter)
+                .populate(
+                    "business",
+                    "name"
+                )
+                .populate(
+                    "user",
+                    "name email phone"
+                )
+                .populate(
+                    "openedBy",
+                    "name email"
+                )
+                .populate(
+                    "closedBy",
+                    "name email"
+                )
+                .sort({
+                    openedAt: -1,
+                })
+                .skip(skip)
+                .limit(limitNumber),
+
+            CashRegister.countDocuments(
+                filter
+            ),
+        ]);
+
+        return successResponse(
+            res,
+            200,
+            "Cash registers fetched successfully.",
+            {
+                registers,
+
+                pagination: {
+                    total,
+                    page: pageNumber,
+                    limit: limitNumber,
+                    totalPages:
+                        Math.ceil(
+                            total /
+                                limitNumber
+                        ),
+                },
+            }
+        );
+    } catch (error) {
+        next(error);
+    }
+};
 
 // =====================================================
 // GET CASH REGISTER BY ID
 // =====================================================
 
-export const getCashRegisterById =
-    async (
-        req,
-        res,
-        next
-    ) => {
-        try {
-            const { id } =
-                req.params;
+export const getCashRegisterById = async (
+    req,
+    res,
+    next
+) => {
+    try {
+        const { id } = req.params;
 
-            if (
-                !isValidObjectId(id)
-            ) {
-                return errorResponse(
-                    res,
-                    400,
-                    "Invalid cash register ID."
-                );
-            }
-
-            const tenant =
-                await resolveTenant(req);
-
-            const filter =
-                buildRegisterTenantQuery(
-                    tenant
-                );
-
-            filter._id = id;
-
-            const register =
-                await CashRegister.findOne(
-                    filter
-                )
-                    .populate(
-                        "business",
-                        "name"
-                    )
-                    .populate(
-                        "user",
-                        "name email phone"
-                    )
-                    .populate(
-                        "openedBy",
-                        "name email"
-                    )
-                    .populate(
-                        "closedBy",
-                        "name email"
-                    );
-
-            if (!register) {
-                return errorResponse(
-                    res,
-                    404,
-                    "Cash register not found."
-                );
-            }
-
-            return successResponse(
+        if (
+            !isValidObjectId(id)
+        ) {
+            return errorResponse(
                 res,
-                200,
-                "Cash register fetched successfully.",
-                register
+                400,
+                "Invalid cash register ID."
             );
-        } catch (error) {
-            next(error);
         }
-    };
+
+        const tenant =
+            await resolveTenant(req);
+
+        const filter =
+            buildRegisterTenantQuery(
+                tenant
+            );
+
+        filter._id = id;
+
+        const register =
+            await CashRegister.findOne(
+                filter
+            )
+                .populate(
+                    "business",
+                    "name"
+                )
+                .populate(
+                    "user",
+                    "name email phone"
+                )
+                .populate(
+                    "openedBy",
+                    "name email"
+                )
+                .populate(
+                    "closedBy",
+                    "name email"
+                );
+
+        if (!register) {
+            return errorResponse(
+                res,
+                404,
+                "Cash register not found."
+            );
+        }
+
+        return successResponse(
+            res,
+            200,
+            "Cash register fetched successfully.",
+            register
+        );
+    } catch (error) {
+        next(error);
+    }
+};

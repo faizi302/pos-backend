@@ -2,6 +2,10 @@ import mongoose from "mongoose";
 
 const salePaymentSchema = new mongoose.Schema(
   {
+    // =====================================================
+    // TENANT
+    // =====================================================
+
     tenantOwner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -23,6 +27,10 @@ const salePaymentSchema = new mongoose.Schema(
       index: true,
     },
 
+    // =====================================================
+    // SALE
+    // =====================================================
+
     sale: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Sale",
@@ -37,11 +45,33 @@ const salePaymentSchema = new mongoose.Schema(
       index: true,
     },
 
+    // =====================================================
+    // PAYMENT IDENTIFICATION
+    // =====================================================
+
     paymentNumber: {
       type: String,
       required: true,
       trim: true,
     },
+
+    // =====================================================
+    // LOCAL POS ACCOUNTING
+    // =====================================================
+    // IMPORTANT:
+    // This amount is ALWAYS the amount applied to the Sale.
+    //
+    // Your Sale accounting remains PKR.
+    //
+    // Example:
+    // Sale = PKR 25,000
+    //
+    // PayPal may receive USD 89.29
+    // but this field remains:
+    //
+    // amount = 25,000
+    // currency = PKR
+    // =====================================================
 
     amount: {
       type: Number,
@@ -54,8 +84,57 @@ const salePaymentSchema = new mongoose.Schema(
       required: true,
       uppercase: true,
       trim: true,
-      default: "USD",
+      default: "PKR",
     },
+
+    // =====================================================
+    // GATEWAY AMOUNT
+    // =====================================================
+    // The actual amount sent to the payment gateway.
+    //
+    // PayPal:
+    // gatewayAmount = 89.29
+    // gatewayCurrency = USD
+    //
+    // Easypaisa/JazzCash:
+    // gatewayAmount = 25000
+    // gatewayCurrency = PKR
+    // =====================================================
+
+    gatewayAmount: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+
+    gatewayCurrency: {
+      type: String,
+      uppercase: true,
+      trim: true,
+      default: null,
+    },
+
+    // =====================================================
+    // EXCHANGE RATE
+    // =====================================================
+    // Used when local currency and gateway currency differ.
+    //
+    // Example:
+    // PKR -> USD
+    // 1 PKR = 0.00357143 USD
+    //
+    // For PKR -> PKR gateways this remains null.
+    // =====================================================
+
+    exchangeRate: {
+      type: Number,
+      default: null,
+      min: 0,
+    },
+
+    // =====================================================
+    // PAYMENT METHOD
+    // =====================================================
 
     paymentMethod: {
       type: String,
@@ -71,6 +150,10 @@ const salePaymentSchema = new mongoose.Schema(
       required: true,
     },
 
+    // =====================================================
+    // PAYMENT GATEWAY
+    // =====================================================
+
     gateway: {
       type: String,
       enum: [
@@ -84,6 +167,10 @@ const salePaymentSchema = new mongoose.Schema(
       default: null,
     },
 
+    // =====================================================
+    // PAYMENT STATUS
+    // =====================================================
+
     status: {
       type: String,
       enum: [
@@ -95,6 +182,10 @@ const salePaymentSchema = new mongoose.Schema(
       default: "pending",
       index: true,
     },
+
+    // =====================================================
+    // TRANSACTION INFORMATION
+    // =====================================================
 
     transactionId: {
       type: String,
@@ -132,16 +223,28 @@ const salePaymentSchema = new mongoose.Schema(
       default: null,
     },
 
+    // =====================================================
+    // DATES
+    // =====================================================
+
     paymentDate: {
       type: Date,
       default: null,
     },
+
+    // =====================================================
+    // NOTES
+    // =====================================================
 
     notes: {
       type: String,
       trim: true,
       default: "",
     },
+
+    // =====================================================
+    // AUDIT
+    // =====================================================
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -159,6 +262,10 @@ const salePaymentSchema = new mongoose.Schema(
     timestamps: true,
   }
 );
+
+// =====================================================
+// INDEXES
+// =====================================================
 
 salePaymentSchema.index(
   {

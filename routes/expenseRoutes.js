@@ -10,7 +10,7 @@ import {
   deleteExpense,
 } from "../controllers/expenseController.js";
 
-import {protect} from "../middlewares/auth.middleware.js";
+import { protect } from "../middlewares/auth.middleware.js";
 import { authorize } from "../middlewares/permission.middleware.js";
 import validate from "../middlewares/validate.js";
 
@@ -21,7 +21,10 @@ import {
 
 const router = express.Router();
 
-// Create expense
+// =====================================================
+// CREATE EXPENSE
+// POST /api/expenses
+// =====================================================
 router.post(
   "/",
   protect,
@@ -30,7 +33,10 @@ router.post(
   createExpense
 );
 
-// Get all expenses
+// =====================================================
+// GET ALL EXPENSES
+// GET /api/expenses
+// =====================================================
 router.get(
   "/",
   protect,
@@ -38,7 +44,10 @@ router.get(
   getAllExpenses
 );
 
-// Get expense by ID
+// =====================================================
+// GET EXPENSE BY ID
+// GET /api/expenses/:id
+// =====================================================
 router.get(
   "/:id",
   protect,
@@ -46,7 +55,10 @@ router.get(
   getExpenseById
 );
 
-// Update expense
+// =====================================================
+// UPDATE EXPENSE
+// PATCH /api/expenses/:id
+// =====================================================
 router.patch(
   "/:id",
   protect,
@@ -55,7 +67,10 @@ router.patch(
   updateExpense
 );
 
-// Cancel expense
+// =====================================================
+// CANCEL EXPENSE
+// PATCH /api/expenses/:id/cancel
+// =====================================================
 router.patch(
   "/:id/cancel",
   protect,
@@ -63,7 +78,10 @@ router.patch(
   cancelExpense
 );
 
-// Restore expense
+// =====================================================
+// RESTORE EXPENSE
+// PATCH /api/expenses/:id/restore
+// =====================================================
 router.patch(
   "/:id/restore",
   protect,
@@ -71,7 +89,10 @@ router.patch(
   restoreExpense
 );
 
-// Soft delete
+// =====================================================
+// SOFT DELETE EXPENSE
+// DELETE /api/expenses/:id
+// =====================================================
 router.delete(
   "/:id",
   protect,
