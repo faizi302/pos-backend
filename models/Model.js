@@ -2,9 +2,12 @@ import mongoose from "mongoose";
 
 const modelSchema = new mongoose.Schema(
   {
-    // =====================================================
-    // TENANT / BUSINESS
-    // =====================================================
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: [true, "Tenant owner is required"],
+      index: true,
+    },
 
     business: {
       type: mongoose.Schema.Types.ObjectId,
@@ -13,10 +16,6 @@ const modelSchema = new mongoose.Schema(
       index: true,
     },
 
-    // =====================================================
-    // BUSINESS TYPE
-    // =====================================================
-
     businessType: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "BusinessType",
@@ -24,20 +23,12 @@ const modelSchema = new mongoose.Schema(
       index: true,
     },
 
-    // =====================================================
-    // BRAND
-    // =====================================================
-
     brand: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Brand",
       required: [true, "Brand is required"],
       index: true,
     },
-
-    // =====================================================
-    // CREATOR
-    // =====================================================
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -51,10 +42,6 @@ const modelSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
-
-    // =====================================================
-    // MODEL INFORMATION
-    // =====================================================
 
     name: {
       type: String,
@@ -70,10 +57,6 @@ const modelSchema = new mongoose.Schema(
       default: "",
     },
 
-    // =====================================================
-    // STATUS
-    // =====================================================
-
     isActive: {
       type: Boolean,
       default: true,
@@ -84,41 +67,26 @@ const modelSchema = new mongoose.Schema(
   }
 );
 
-// =========================================================
-// UNIQUE MODEL PER BUSINESS + BRAND
-// =========================================================
-//
-// Business A → Samsung → Galaxy S22
-// Business B → Samsung → Galaxy S22
-//
-// Both are allowed.
-//
-// But:
-// Business A → Samsung → Galaxy S22
-// Business A → Samsung → Galaxy S22
-//
-// is NOT allowed.
-//
-// =========================================================
-
+// Unique name per tenant + business + brand
 modelSchema.index(
   {
+    tenantOwner: 1,
     business: 1,
     brand: 1,
     name: 1,
   },
-  {
-    unique: true,
-  }
+  { unique: true }
 );
 
-// =========================================================
-// QUERY INDEX
-// =========================================================
-
 modelSchema.index({
+  tenantOwner: 1,
   business: 1,
   businessType: 1,
+  isActive: 1,
+});
+
+modelSchema.index({
+  brand: 1,
   isActive: 1,
 });
 

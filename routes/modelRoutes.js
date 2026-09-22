@@ -10,7 +10,6 @@ import {
 } from "../controllers/modelController.js";
 
 import validate from "../middlewares/validate.js";
-
 import {
   createModelSchema,
   updateModelSchema,
@@ -21,11 +20,6 @@ import { authorize } from "../middlewares/permission.middleware.js";
 
 const router = express.Router();
 
-// =====================================================
-// MODEL CRUD
-// =====================================================
-
-// Create Model
 router.post(
   "/",
   protect,
@@ -34,15 +28,8 @@ router.post(
   createModel
 );
 
-// Get All Models
-router.get(
-  "/",
-  protect,
-  authorize("models.read"),
-  getAllModels
-);
+router.get("/", protect, authorize("models.read"), getAllModels);
 
-// Get Models By Brand
 router.get(
   "/brand/:brandId",
   protect,
@@ -50,15 +37,8 @@ router.get(
   getModelsByBrand
 );
 
-// Get Model By ID
-router.get(
-  "/:id",
-  protect,
-  authorize("models.read"),
-  getModelById
-);
+router.get("/:id", protect, authorize("models.read"), getModelById);
 
-// Update Model
 router.put(
   "/:id",
   protect,
@@ -67,7 +47,6 @@ router.put(
   updateModel
 );
 
-// Delete Model
 router.delete(
   "/:id",
   protect,

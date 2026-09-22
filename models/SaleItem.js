@@ -111,6 +111,29 @@ const saleItemSchema = new mongoose.Schema(
     },
 
     // =====================================================
+    // IMEI / SERIAL (snapshot at time of sale)
+    // =====================================================
+    //
+    // Copied from ProductInventory when the item is added.
+    // This keeps the sold IMEI permanently on the invoice
+    // even if the inventory record is later changed.
+    //
+    imei: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: null,
+      index: true,
+    },
+
+    unitBarcode: {
+      type: String,
+      trim: true,
+      uppercase: true,
+      default: null,
+    },
+
+    // =====================================================
     // AUDIT
     // =====================================================
 
@@ -190,6 +213,15 @@ saleItemSchema.index({
   tenantOwner: 1,
   sale: 1,
   productInventory: 1,
+});
+
+// =====================================================
+// IMEI SEARCH (optional but useful)
+// =====================================================
+
+saleItemSchema.index({
+  tenantOwner: 1,
+  imei: 1,
 });
 
 // =====================================================

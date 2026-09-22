@@ -10,7 +10,6 @@ import {
 } from "../controllers/brandController.js";
 
 import validate from "../middlewares/validate.js";
-
 import {
   createBrandSchema,
   updateBrandSchema,
@@ -21,11 +20,6 @@ import { authorize } from "../middlewares/permission.middleware.js";
 
 const router = express.Router();
 
-// =====================================================
-// BRAND CRUD
-// =====================================================
-
-// Create Brand
 router.post(
   "/",
   protect,
@@ -34,15 +28,8 @@ router.post(
   createBrand
 );
 
-// Get All Brands
-router.get(
-  "/",
-  protect,
-  authorize("brands.read"),
-  getAllBrands
-);
+router.get("/", protect, authorize("brands.read"), getAllBrands);
 
-// Get Brands By Business Type
 router.get(
   "/business-type/:businessTypeId",
   protect,
@@ -50,15 +37,8 @@ router.get(
   getBrandsByBusinessType
 );
 
-// Get Brand By ID
-router.get(
-  "/:id",
-  protect,
-  authorize("brands.read"),
-  getBrandById
-);
+router.get("/:id", protect, authorize("brands.read"), getBrandById);
 
-// Update Brand
 router.put(
   "/:id",
   protect,
@@ -67,7 +47,6 @@ router.put(
   updateBrand
 );
 
-// Delete Brand
 router.delete(
   "/:id",
   protect,

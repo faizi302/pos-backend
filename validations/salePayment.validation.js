@@ -1,8 +1,6 @@
 import Joi from "joi";
 
-const objectId = Joi.string()
-  .hex()
-  .length(24);
+const objectId = Joi.string().hex().length(24);
 
 export const createSalePaymentSchema = Joi.object({
   business: objectId.optional(),
@@ -27,8 +25,7 @@ export const createSalePaymentSchema = Joi.object({
     .max(50)
     .optional(),
 
-  paymentDate: Joi.date()
-    .optional(),
+  paymentDate: Joi.date().optional(),
 
   amount: Joi.number()
     .positive()
@@ -48,18 +45,24 @@ export const createSalePaymentSchema = Joi.object({
       "string.length": "Currency must be a valid 3-letter currency code.",
     }),
 
+  // =====================================================
+  // UPDATED PAYMENT METHODS
+  // =====================================================
   paymentMethod: Joi.string()
     .valid(
       "cash",
       "bank",
       "card",
       "cheque",
+      "jazzcash",
+      "easypaisa",
       "credit",
       "other"
     )
     .default("cash")
     .messages({
-      "any.only": "Invalid payment method.",
+      "any.only":
+        "Invalid payment method. Allowed: cash, bank, card, cheque, jazzcash, easypaisa, credit, other",
     }),
 
   referenceNumber: Joi.string()
@@ -75,10 +78,8 @@ export const createSalePaymentSchema = Joi.object({
     .optional(),
 }).unknown(false);
 
-
 export const updateSalePaymentSchema = Joi.object({
-  paymentDate: Joi.date()
-    .optional(),
+  paymentDate: Joi.date().optional(),
 
   amount: Joi.number()
     .positive()
@@ -88,18 +89,24 @@ export const updateSalePaymentSchema = Joi.object({
       "number.positive": "Payment amount must be greater than 0.",
     }),
 
+  // =====================================================
+  // UPDATED PAYMENT METHODS
+  // =====================================================
   paymentMethod: Joi.string()
     .valid(
       "cash",
       "bank",
       "card",
       "cheque",
+      "jazzcash",
+      "easypaisa",
       "credit",
       "other"
     )
     .optional()
     .messages({
-      "any.only": "Invalid payment method.",
+      "any.only":
+        "Invalid payment method. Allowed: cash, bank, card, cheque, jazzcash, easypaisa, credit, other",
     }),
 
   referenceNumber: Joi.string()

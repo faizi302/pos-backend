@@ -1,152 +1,44 @@
-
 import Joi from "joi";
 
-// =====================================================
-// CREATE MODEL VALIDATION
-// =====================================================
+const objectId = Joi.string()
+  .hex()
+  .length(24)
+  .messages({
+    "string.hex": "Must be a valid MongoDB ObjectId",
+    "string.length": "Must be a valid MongoDB ObjectId",
+  });
 
 export const createModelSchema = Joi.object({
-    name: Joi.string()
-        .trim()
-        .min(2)
-        .max(150)
-        .required()
-        .messages({
-            "string.empty": "Model name is required",
-            "string.min":
-                "Model name must be at least 2 characters",
-            "string.max":
-                "Model name cannot exceed 150 characters",
-            "any.required": "Model name is required",
-        }),
+  name: Joi.string().trim().min(1).max(150).required().messages({
+    "string.empty": "Model name is required",
+    "any.required": "Model name is required",
+  }),
 
-    business: Joi.string()
-        .hex()
-        .length(24)
-        .required()
-        .messages({
-            "string.empty": "Business is required",
-            "string.hex":
-                "Business ID must be a valid MongoDB ObjectId",
-            "string.length":
-                "Business ID must be a valid MongoDB ObjectId",
-            "any.required": "Business is required",
-        }),
+  brand: objectId.required().messages({
+    "any.required": "Brand is required",
+  }),
 
-    businessType: Joi.string()
-        .hex()
-        .length(24)
-        .required()
-        .messages({
-            "string.empty":
-                "Business type is required",
-            "string.hex":
-                "Business type ID must be a valid MongoDB ObjectId",
-            "string.length":
-                "Business type ID must be a valid MongoDB ObjectId",
-            "any.required":
-                "Business type is required",
-        }),
+  description: Joi.string().trim().max(500).allow("").optional(),
 
-    brand: Joi.string()
-        .hex()
-        .length(24)
-        .required()
-        .messages({
-            "string.empty": "Brand is required",
-            "string.hex":
-                "Brand ID must be a valid MongoDB ObjectId",
-            "string.length":
-                "Brand ID must be a valid MongoDB ObjectId",
-            "any.required": "Brand is required",
-        }),
+  isActive: Joi.boolean().optional().default(true),
 
-    description: Joi.string()
-        .trim()
-        .max(500)
-        .optional()
-        .allow("")
-        .messages({
-            "string.max":
-                "Description cannot exceed 500 characters",
-        }),
-
-    isActive: Joi.boolean()
-        .optional()
-        .default(true)
-        .messages({
-            "boolean.base":
-                "isActive must be true or false",
-        }),
-});
-
-
-// =====================================================
-// UPDATE MODEL VALIDATION
-// =====================================================
+  business: objectId.optional(),
+  businessType: objectId.optional(),
+  tenantOwner: objectId.optional(),
+}).unknown(false);
 
 export const updateModelSchema = Joi.object({
-    name: Joi.string()
-        .trim()
-        .min(2)
-        .max(150)
-        .optional()
-        .messages({
-            "string.empty":
-                "Model name cannot be empty",
-            "string.min":
-                "Model name must be at least 2 characters",
-            "string.max":
-                "Model name cannot exceed 150 characters",
-        }),
+  name: Joi.string().trim().min(1).max(150).optional(),
 
-    business: Joi.string()
-        .hex()
-        .length(24)
-        .optional()
-        .messages({
-            "string.hex":
-                "Business ID must be a valid MongoDB ObjectId",
-            "string.length":
-                "Business ID must be a valid MongoDB ObjectId",
-        }),
+  brand: objectId.optional(),
 
-    businessType: Joi.string()
-        .hex()
-        .length(24)
-        .optional()
-        .messages({
-            "string.hex":
-                "Business type ID must be a valid MongoDB ObjectId",
-            "string.length":
-                "Business type ID must be a valid MongoDB ObjectId",
-        }),
+  description: Joi.string().trim().max(500).allow("").optional(),
 
-    brand: Joi.string()
-        .hex()
-        .length(24)
-        .optional()
-        .messages({
-            "string.hex":
-                "Brand ID must be a valid MongoDB ObjectId",
-            "string.length":
-                "Brand ID must be a valid MongoDB ObjectId",
-        }),
+  isActive: Joi.boolean().optional(),
 
-    description: Joi.string()
-        .trim()
-        .max(500)
-        .optional()
-        .allow("")
-        .messages({
-            "string.max":
-                "Description cannot exceed 500 characters",
-        }),
-
-    isActive: Joi.boolean()
-        .optional()
-        .messages({
-            "boolean.base":
-                "isActive must be true or false",
-        }),
-});
+  business: objectId.optional(),
+  businessType: objectId.optional(),
+  tenantOwner: objectId.optional(),
+})
+  .min(1)
+  .unknown(false);

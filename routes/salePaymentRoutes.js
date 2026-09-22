@@ -10,7 +10,7 @@ import {
   deleteSalePayment,
 } from "../controllers/salePaymentController.js";
 
-import {protect} from "../middlewares/auth.middleware.js";
+import { protect } from "../middlewares/auth.middleware.js";
 import { authorize } from "../middlewares/permission.middleware.js";
 import validate from "../middlewares/validate.js";
 
@@ -21,7 +21,6 @@ import {
 
 const router = express.Router();
 
-
 // Create payment
 router.post(
   "/",
@@ -31,7 +30,6 @@ router.post(
   createSalePayment
 );
 
-
 // Get all payments
 router.get(
   "/",
@@ -39,7 +37,6 @@ router.get(
   authorize("sale-payments.read"),
   getAllSalePayments
 );
-
 
 // Get payments of a specific sale
 router.get(
@@ -49,7 +46,6 @@ router.get(
   getSalePaymentsBySale
 );
 
-
 // Get payment by ID
 router.get(
   "/:id",
@@ -57,7 +53,6 @@ router.get(
   authorize("sale-payments.read"),
   getSalePaymentById
 );
-
 
 // Update payment
 router.patch(
@@ -68,7 +63,6 @@ router.patch(
   updateSalePayment
 );
 
-
 // Cancel payment
 router.patch(
   "/:id/cancel",
@@ -77,7 +71,6 @@ router.patch(
   cancelSalePayment
 );
 
-
 // Permanent delete is intentionally blocked
 router.delete(
   "/:id",
@@ -85,6 +78,5 @@ router.delete(
   authorize("sale-payments.delete"),
   deleteSalePayment
 );
-
 
 export default router;

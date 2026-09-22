@@ -143,7 +143,7 @@ const getPopulatedItem = (id) =>
     .populate("product", "name sku barcode")
     .populate(
       "productInventory",
-      "color size quantity salePrice"
+      "color size quantity salePrice imei unitBarcode"
     )
     .populate("createdBy", "name email")
     .populate("updatedBy", "name email");
@@ -281,6 +281,15 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
+    // For serial (IMEI) items → quantity must be 1
+    if (inventory.imei && quantity > 1) {
+      return errorResponse(
+        res,
+        400,
+        "This is a serial (IMEI) item. Quantity must be 1."
+      );
+    }
+
     const exists = await SaleItem.findOne({
       sale,
       productInventory,
@@ -324,6 +333,7 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
+    // Snapshot IMEI + unitBarcode from inventory
     const saleItem = await SaleItem.create({
       ...scope,
       sale,
@@ -335,6 +345,8 @@ export const createSaleItem = async (req, res, next) => {
       tax,
       lineSubtotal,
       lineTotal,
+      imei: inventory.imei || null,
+      unitBarcode: inventory.unitBarcode || null,
       createdBy: req.user._id,
     });
 
@@ -375,6 +387,7 @@ export const getAllSaleItems = async (req, res, next) => {
       sale,
       product,
       productInventory,
+      imei,
     } = req.query;
 
     const currentPage = Math.max(Number(page) || 1, 1);
@@ -410,6 +423,10 @@ export const getAllSaleItems = async (req, res, next) => {
       filter.productInventory = productInventory;
     }
 
+    if (imei) {
+      filter.imei = String(imei).trim().toUpperCase();
+    }
+
     const skip = (currentPage - 1) * currentLimit;
 
     const [items, total] = await Promise.all([
@@ -423,7 +440,7 @@ export const getAllSaleItems = async (req, res, next) => {
         .populate("product", "name sku barcode")
         .populate(
           "productInventory",
-          "color size quantity salePrice"
+          "color size quantity salePrice imei unitBarcode"
         )
         .sort({ createdAt: -1 })
         .skip(skip)
@@ -490,7 +507,7 @@ export const getSaleItemsBySale = async (req, res, next) => {
       .populate("product", "name sku barcode")
       .populate(
         "productInventory",
-        "color size quantity salePrice"
+        "color size quantity salePrice imei unitBarcode"
       )
       .sort({ createdAt: 1 });
 
@@ -546,7 +563,7 @@ export const getSaleItemById = async (req, res, next) => {
       .populate("product", "name sku barcode")
       .populate(
         "productInventory",
-        "color size quantity salePrice"
+        "color size quantity salePrice imei unitBarcode"
       )
       .populate("createdBy", "name email")
       .populate("updatedBy", "name email");
@@ -681,6 +698,15 @@ export const updateSaleItem = async (req, res, next) => {
       );
     }
 
+    // For serial (IMEI) items → quantity must be 1
+    if (inventory.imei && quantity > 1) {
+      return errorResponse(
+        res,
+        400,
+        "This is a serial (IMEI) item. Quantity must be 1."
+      );
+    }
+
     // ---------- QUANTITY DIFFERENCE ----------
     const oldQty = saleItem.quantity;
     const diff = quantity - oldQty; // positive = need more stock, negative = return stock
@@ -750,6 +776,11 @@ export const updateSaleItem = async (req, res, next) => {
     saleItem.tax = tax;
     saleItem.lineSubtotal = lineSubtotal;
     saleItem.lineTotal = lineTotal;
+
+    // Always keep the latest IMEI / unitBarcode snapshot
+    saleItem.imei = inventory.imei || null;
+    saleItem.unitBarcode = inventory.unitBarcode || null;
+
     saleItem.updatedBy = req.user._id;
 
     await saleItem.save();

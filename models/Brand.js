@@ -2,10 +2,6 @@ import mongoose from "mongoose";
 
 const brandSchema = new mongoose.Schema(
   {
-    // =====================================================
-    // TENANT / BUSINESS
-    // =====================================================
-
     business: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Business",
@@ -13,20 +9,12 @@ const brandSchema = new mongoose.Schema(
       index: true,
     },
 
-    // =====================================================
-    // BUSINESS TYPE
-    // =====================================================
-
     businessType: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "BusinessType",
       required: [true, "Business type is required"],
       index: true,
     },
-
-    // =====================================================
-    // CREATOR
-    // =====================================================
 
     createdBy: {
       type: mongoose.Schema.Types.ObjectId,
@@ -40,10 +28,6 @@ const brandSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
-
-    // =====================================================
-    // BRAND INFORMATION
-    // =====================================================
 
     name: {
       type: String,
@@ -59,9 +43,12 @@ const brandSchema = new mongoose.Schema(
       default: "",
     },
 
-    // =====================================================
-    // STATUS
-    // =====================================================
+    tenantOwner: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: [true, "Tenant owner is required"],
+      index: true,
+    },
 
     isActive: {
       type: Boolean,
@@ -73,33 +60,18 @@ const brandSchema = new mongoose.Schema(
   }
 );
 
-// =========================================================
-// UNIQUE BRAND PER BUSINESS
-// =========================================================
-//
-// Business A can have:
-// Samsung
-//
-// Business B can also have:
-// Samsung
-//
-// But Business A cannot have Samsung twice.
-//
-// =========================================================
-
+// Unique name per tenant + business + businessType
 brandSchema.index(
   {
+    tenantOwner: 1,
     business: 1,
+    businessType: 1,
     name: 1,
   },
   {
     unique: true,
   }
 );
-
-// =========================================================
-// QUERY INDEX
-// =========================================================
 
 brandSchema.index({
   business: 1,

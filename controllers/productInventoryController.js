@@ -1,5 +1,6 @@
 import Product from "../models/Product.js";
 import ProductInventory from "../models/ProductInventory.js";
+import BusinessType from "../models/BusinessType.js";
 import User from "../models/User.js";
 
 import {
@@ -44,6 +45,18 @@ const normalizeVariant = (value) => {
   return normalized || null;
 };
 
+const normalizeImei = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim().toUpperCase();
+  return normalized || null;
+};
+
+const normalizeUnitBarcode = (value) => {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim().toUpperCase();
+  return normalized || null;
+};
+
 const getRoleSlug = (user) => {
   if (!user) return null;
 
@@ -71,7 +84,7 @@ const populateInventory = (query) => {
     .populate({
       path: "product",
       select:
-        "name sku barcode brand model category business businessType tenantOwner hasVariants",
+        "name sku barcode brand model category business businessType tenantOwner hasVariants trackSerial",
     })
     .populate({
       path: "business",
@@ -268,6 +281,22 @@ const validateProductTenant = (
 };
 
 // ======================================================
+// CHECK IF BUSINESS TYPE IS MOBILES
+// ======================================================
+
+const isMobilesBusinessType = async (businessTypeId) => {
+  if (!businessTypeId) return false;
+
+  const bt = await BusinessType.findById(businessTypeId)
+    .select("name")
+    .lean();
+
+  if (!bt || !bt.name) return false;
+
+  return bt.name.toLowerCase().trim() === "mobiles";
+};
+
+// ======================================================
 // CREATE INVENTORY
 // ======================================================
 
@@ -284,6 +313,9 @@ export const createProductInventory = async (req, res, next) => {
       salePrice,
       discount = 0,
       tax = 0,
+      imei,
+      unitBarcode,
+      serialNumber,
     } = req.body;
 
     if (!product || !isValidObjectId(product)) {
@@ -344,9 +376,40 @@ export const createProductInventory = async (req, res, next) => {
     const businessId = productData.business;
     const businessTypeId = productData.businessType;
 
+    // --------------------------------------------------
+    // Detect if this is a Mobiles business type
+    // --------------------------------------------------
+    const isMobiles = await isMobilesBusinessType(businessTypeId);
+
     const normalizedColor = normalizeVariant(color);
     const normalizedSize = normalizeVariant(size);
+    const normalizedImei = normalizeImei(imei);
+    const normalizedUnitBarcode = normalizeUnitBarcode(unitBarcode);
+    const normalizedSerial = normalizeVariant(serialNumber);
 
+    // --------------------------------------------------
+    // IMEI validation for Mobiles
+    // --------------------------------------------------
+    if (isMobiles) {
+      if (!normalizedImei) {
+        return errorResponse(
+          res,
+          400,
+          "IMEI number is required for mobile products."
+        );
+      }
+
+      // For serial products quantity should normally be 1
+      if (quantity !== undefined && Number(quantity) > 1) {
+        return errorResponse(
+          res,
+          400,
+          "For mobile products with IMEI, quantity must be 1."
+        );
+      }
+    }
+
+    // Non-variant products cannot have color/size
     if (
       !productData.hasVariants &&
       (normalizedColor || normalizedSize)
@@ -358,7 +421,11 @@ export const createProductInventory = async (req, res, next) => {
       );
     }
 
-    const parsedQuantity = parseNumber(quantity, "Quantity") ?? 0;
+    const parsedQuantity =
+      isMobiles && normalizedImei
+        ? 1
+        : parseNumber(quantity, "Quantity") ?? 0;
+
     const parsedMinStock = parseNumber(minStock, "Minimum stock") ?? 0;
     const parsedMaxStock = parseNumber(maxStock, "Maximum stock");
 
@@ -415,22 +482,65 @@ export const createProductInventory = async (req, res, next) => {
       return errorResponse(res, 400, "Tax cannot be negative.");
     }
 
-    const duplicate = await ProductInventory.findOne({
-      tenantOwner,
-      product: productData._id,
-      color: normalizedColor,
-      size: normalizedSize,
-      isActive: true,
-    });
+    // --------------------------------------------------
+    // Duplicate checks
+    // --------------------------------------------------
 
-    if (duplicate) {
-      return errorResponse(
-        res,
-        409,
-        "This product inventory variant already exists in this tenant."
-      );
+    // For non-serial (imei = null) → old color/size uniqueness
+    if (!normalizedImei) {
+      const duplicate = await ProductInventory.findOne({
+        tenantOwner,
+        product: productData._id,
+        color: normalizedColor,
+        size: normalizedSize,
+        isActive: true,
+        imei: null,
+      });
+
+      if (duplicate) {
+        return errorResponse(
+          res,
+          409,
+          "This product inventory variant already exists in this tenant."
+        );
+      }
     }
 
+    // IMEI uniqueness
+    if (normalizedImei) {
+      const existingImei = await ProductInventory.findOne({
+        tenantOwner,
+        imei: normalizedImei,
+      });
+
+      if (existingImei) {
+        return errorResponse(
+          res,
+          409,
+          "This IMEI already exists in this tenant."
+        );
+      }
+    }
+
+    // Unit barcode uniqueness
+    if (normalizedUnitBarcode) {
+      const existingBarcode = await ProductInventory.findOne({
+        tenantOwner,
+        unitBarcode: normalizedUnitBarcode,
+      });
+
+      if (existingBarcode) {
+        return errorResponse(
+          res,
+          409,
+          "This unit barcode already exists in this tenant."
+        );
+      }
+    }
+
+    // --------------------------------------------------
+    // CREATE
+    // --------------------------------------------------
     const inventory = await ProductInventory.create({
       tenantOwner,
       business: businessId,
@@ -438,6 +548,9 @@ export const createProductInventory = async (req, res, next) => {
       product: productData._id,
       color: normalizedColor,
       size: normalizedSize,
+      imei: normalizedImei,
+      unitBarcode: normalizedUnitBarcode,
+      serialNumber: normalizedSerial,
       quantity: parsedQuantity,
       minStock: parsedMinStock,
       maxStock: parsedMaxStock ?? null,
@@ -463,6 +576,22 @@ export const createProductInventory = async (req, res, next) => {
     console.error("Create Product Inventory Error:", error);
 
     if (error.code === 11000) {
+      // Detect which unique key failed
+      const key = error.keyPattern || {};
+      if (key.imei) {
+        return errorResponse(
+          res,
+          409,
+          "This IMEI already exists in this tenant."
+        );
+      }
+      if (key.unitBarcode) {
+        return errorResponse(
+          res,
+          409,
+          "This unit barcode already exists in this tenant."
+        );
+      }
       return errorResponse(
         res,
         409,
@@ -488,6 +617,8 @@ export const getAllProductInventory = async (req, res, next) => {
       size,
       stockStatus,
       search,
+      imei,
+      unitBarcode,
     } = req.query;
 
     const page = Math.max(Number(req.query.page) || 1, 1);
@@ -553,6 +684,7 @@ export const getAllProductInventory = async (req, res, next) => {
       query.product = productData._id;
     }
 
+    // Search by product name / sku / barcode OR by IMEI / unitBarcode
     if (search?.trim()) {
       const searchValue = String(search).trim();
       const escapedSearch = searchValue.replace(
@@ -580,24 +712,20 @@ export const getAllProductInventory = async (req, res, next) => {
         searchProductQuery
       );
 
-      if (!searchProductIds.length) {
-        return successResponse(
-          res,
-          200,
-          "Product inventory fetched successfully.",
-          {
-            inventory: [],
-            pagination: {
-              page,
-              limit,
-              total: 0,
-              totalPages: 0,
-            },
-          }
-        );
-      }
+      // Also search directly on inventory IMEI / unitBarcode
+      const inventorySearchOr = [
+        { imei: regex },
+        { unitBarcode: regex },
+      ];
 
-      query.product = { $in: searchProductIds };
+      if (searchProductIds.length) {
+        query.$or = [
+          { product: { $in: searchProductIds } },
+          ...inventorySearchOr,
+        ];
+      } else {
+        query.$or = inventorySearchOr;
+      }
     }
 
     if (color) {
@@ -606,6 +734,14 @@ export const getAllProductInventory = async (req, res, next) => {
 
     if (size) {
       query.size = String(size).trim();
+    }
+
+    if (imei) {
+      query.imei = String(imei).trim().toUpperCase();
+    }
+
+    if (unitBarcode) {
+      query.unitBarcode = String(unitBarcode).trim().toUpperCase();
     }
 
     if (stockStatus === "out-of-stock") {
@@ -764,6 +900,72 @@ export const getProductInventoryById = async (req, res, next) => {
 };
 
 // ======================================================
+// SCAN / LOOKUP BY IMEI OR UNIT BARCODE  (NEW)
+// ======================================================
+
+export const scanProductInventory = async (req, res, next) => {
+  try {
+    const { code } = req.query; // can be IMEI or unitBarcode
+
+    if (!code || !String(code).trim()) {
+      return errorResponse(
+        res,
+        400,
+        "Scan code (IMEI or unit barcode) is required."
+      );
+    }
+
+    const normalizedCode = String(code).trim().toUpperCase();
+
+    const tenant = await resolveTenant(req, false);
+
+    if (tenant.error) {
+      return errorResponse(res, 400, tenant.error);
+    }
+
+    const query = {
+      isActive: true,
+      $or: [
+        { imei: normalizedCode },
+        { unitBarcode: normalizedCode },
+      ],
+    };
+
+    if (!tenant.context.isSuperAdmin) {
+      query.tenantOwner = tenant.tenantOwner;
+      query.business = tenant.business;
+      query.businessType = tenant.businessType;
+    } else if (tenant.tenantOwner) {
+      query.tenantOwner = tenant.tenantOwner;
+      if (tenant.business) query.business = tenant.business;
+      if (tenant.businessType) query.businessType = tenant.businessType;
+    }
+
+    const inventory = await populateInventory(
+      ProductInventory.findOne(query)
+    ).lean();
+
+    if (!inventory) {
+      return errorResponse(
+        res,
+        404,
+        "No inventory found for this IMEI or unit barcode."
+      );
+    }
+
+    return successResponse(
+      res,
+      200,
+      "Inventory found successfully.",
+      inventory
+    );
+  } catch (error) {
+    console.error("Scan Product Inventory Error:", error);
+    next(error);
+  }
+};
+
+// ======================================================
 // UPDATE INVENTORY
 // ======================================================
 
@@ -829,6 +1031,10 @@ export const updateProductInventory = async (req, res, next) => {
       inventory.businessType = productData.businessType;
     }
 
+    const isMobiles = await isMobilesBusinessType(
+      inventory.businessType || productData.businessType
+    );
+
     const color =
       req.body.color !== undefined
         ? normalizeVariant(req.body.color)
@@ -839,6 +1045,21 @@ export const updateProductInventory = async (req, res, next) => {
         ? normalizeVariant(req.body.size)
         : inventory.size;
 
+    const normalizedImei =
+      req.body.imei !== undefined
+        ? normalizeImei(req.body.imei)
+        : inventory.imei;
+
+    const normalizedUnitBarcode =
+      req.body.unitBarcode !== undefined
+        ? normalizeUnitBarcode(req.body.unitBarcode)
+        : inventory.unitBarcode;
+
+    const normalizedSerial =
+      req.body.serialNumber !== undefined
+        ? normalizeVariant(req.body.serialNumber)
+        : inventory.serialNumber;
+
     if (!productData.hasVariants && (color || size)) {
       return errorResponse(
         res,
@@ -847,21 +1068,84 @@ export const updateProductInventory = async (req, res, next) => {
       );
     }
 
-    const duplicate = await ProductInventory.findOne({
-      _id: { $ne: inventory._id },
-      tenantOwner: inventory.tenantOwner,
-      product: inventory.product,
-      color,
-      size,
-      isActive: true,
-    });
-
-    if (duplicate) {
+    // IMEI required for Mobiles
+    if (isMobiles && !normalizedImei) {
       return errorResponse(
         res,
-        409,
-        "Another active inventory variant already exists in this tenant."
+        400,
+        "IMEI number is required for mobile products."
       );
+    }
+
+    // Prevent changing IMEI if quantity is already 0 (sold)
+    if (
+      inventory.imei &&
+      normalizedImei !== inventory.imei &&
+      inventory.quantity === 0
+    ) {
+      return errorResponse(
+        res,
+        400,
+        "Cannot change IMEI of a sold unit."
+      );
+    }
+
+    // Duplicate color/size only for non-serial
+    if (!normalizedImei) {
+      const duplicate = await ProductInventory.findOne({
+        _id: { $ne: inventory._id },
+        tenantOwner: inventory.tenantOwner,
+        product: inventory.product,
+        color,
+        size,
+        isActive: true,
+        imei: null,
+      });
+
+      if (duplicate) {
+        return errorResponse(
+          res,
+          409,
+          "Another active inventory variant already exists in this tenant."
+        );
+      }
+    }
+
+    // IMEI uniqueness
+    if (normalizedImei && normalizedImei !== inventory.imei) {
+      const existingImei = await ProductInventory.findOne({
+        _id: { $ne: inventory._id },
+        tenantOwner: inventory.tenantOwner,
+        imei: normalizedImei,
+      });
+
+      if (existingImei) {
+        return errorResponse(
+          res,
+          409,
+          "This IMEI already exists in this tenant."
+        );
+      }
+    }
+
+    // Unit barcode uniqueness
+    if (
+      normalizedUnitBarcode &&
+      normalizedUnitBarcode !== inventory.unitBarcode
+    ) {
+      const existingBarcode = await ProductInventory.findOne({
+        _id: { $ne: inventory._id },
+        tenantOwner: inventory.tenantOwner,
+        unitBarcode: normalizedUnitBarcode,
+      });
+
+      if (existingBarcode) {
+        return errorResponse(
+          res,
+          409,
+          "This unit barcode already exists in this tenant."
+        );
+      }
     }
 
     if (req.body.quantity !== undefined) {
@@ -869,6 +1153,16 @@ export const updateProductInventory = async (req, res, next) => {
       if (value < 0) {
         return errorResponse(res, 400, "Quantity cannot be negative.");
       }
+
+      // For mobiles with IMEI force quantity = 1
+      if (isMobiles && normalizedImei && value > 1) {
+        return errorResponse(
+          res,
+          400,
+          "For mobile products with IMEI, quantity must be 1."
+        );
+      }
+
       inventory.quantity = value;
     }
 
@@ -962,6 +1256,9 @@ export const updateProductInventory = async (req, res, next) => {
 
     inventory.color = color;
     inventory.size = size;
+    inventory.imei = normalizedImei;
+    inventory.unitBarcode = normalizedUnitBarcode;
+    inventory.serialNumber = normalizedSerial;
     inventory.updatedBy = req.user._id;
 
     await inventory.save();
@@ -980,6 +1277,21 @@ export const updateProductInventory = async (req, res, next) => {
     console.error("Update Product Inventory Error:", error);
 
     if (error.code === 11000) {
+      const key = error.keyPattern || {};
+      if (key.imei) {
+        return errorResponse(
+          res,
+          409,
+          "This IMEI already exists in this tenant."
+        );
+      }
+      if (key.unitBarcode) {
+        return errorResponse(
+          res,
+          409,
+          "This unit barcode already exists in this tenant."
+        );
+      }
       return errorResponse(
         res,
         409,
@@ -1052,6 +1364,11 @@ export const updateProductStock = async (req, res, next) => {
       );
     }
 
+    // For mobiles with IMEI we normally keep quantity 0 or 1
+    const isMobiles = await isMobilesBusinessType(
+      inventory.businessType || productData.businessType
+    );
+
     if (operation === "add") {
       inventory.quantity += parsedQuantity;
     }
@@ -1065,6 +1382,14 @@ export const updateProductStock = async (req, res, next) => {
 
     if (operation === "set") {
       inventory.quantity = parsedQuantity;
+    }
+
+    if (isMobiles && inventory.imei && inventory.quantity > 1) {
+      return errorResponse(
+        res,
+        400,
+        "For mobile products with IMEI, quantity cannot be greater than 1."
+      );
     }
 
     inventory.updatedBy = req.user._id;
@@ -1177,21 +1502,42 @@ export const restoreProductInventory = async (req, res, next) => {
       inventory.businessType = productData.businessType;
     }
 
-    const duplicate = await ProductInventory.findOne({
-      _id: { $ne: inventory._id },
-      tenantOwner: inventory.tenantOwner,
-      product: inventory.product,
-      color: inventory.color,
-      size: inventory.size,
-      isActive: true,
-    });
+    // Duplicate checks on restore
+    if (!inventory.imei) {
+      const duplicate = await ProductInventory.findOne({
+        _id: { $ne: inventory._id },
+        tenantOwner: inventory.tenantOwner,
+        product: inventory.product,
+        color: inventory.color,
+        size: inventory.size,
+        isActive: true,
+        imei: null,
+      });
 
-    if (duplicate) {
-      return errorResponse(
-        res,
-        409,
-        "An active inventory variant with the same color and size already exists in this tenant."
-      );
+      if (duplicate) {
+        return errorResponse(
+          res,
+          409,
+          "An active inventory variant with the same color and size already exists in this tenant."
+        );
+      }
+    }
+
+    if (inventory.imei) {
+      const existingImei = await ProductInventory.findOne({
+        _id: { $ne: inventory._id },
+        tenantOwner: inventory.tenantOwner,
+        imei: inventory.imei,
+        isActive: true,
+      });
+
+      if (existingImei) {
+        return errorResponse(
+          res,
+          409,
+          "An active inventory with the same IMEI already exists in this tenant."
+        );
+      }
     }
 
     inventory.isActive = true;

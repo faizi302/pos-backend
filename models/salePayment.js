@@ -58,20 +58,7 @@ const salePaymentSchema = new mongoose.Schema(
     // =====================================================
     // LOCAL POS ACCOUNTING
     // =====================================================
-    // IMPORTANT:
-    // This amount is ALWAYS the amount applied to the Sale.
-    //
-    // Your Sale accounting remains PKR.
-    //
-    // Example:
-    // Sale = PKR 25,000
-    //
-    // PayPal may receive USD 89.29
-    // but this field remains:
-    //
-    // amount = 25,000
-    // currency = PKR
-    // =====================================================
+    // This amount is ALWAYS the amount applied to the Sale (in PKR).
 
     amount: {
       type: Number,
@@ -88,17 +75,7 @@ const salePaymentSchema = new mongoose.Schema(
     },
 
     // =====================================================
-    // GATEWAY AMOUNT
-    // =====================================================
-    // The actual amount sent to the payment gateway.
-    //
-    // PayPal:
-    // gatewayAmount = 89.29
-    // gatewayCurrency = USD
-    //
-    // Easypaisa/JazzCash:
-    // gatewayAmount = 25000
-    // gatewayCurrency = PKR
+    // GATEWAY FIELDS (kept for future, currently unused)
     // =====================================================
 
     gatewayAmount: {
@@ -114,18 +91,6 @@ const salePaymentSchema = new mongoose.Schema(
       default: null,
     },
 
-    // =====================================================
-    // EXCHANGE RATE
-    // =====================================================
-    // Used when local currency and gateway currency differ.
-    //
-    // Example:
-    // PKR -> USD
-    // 1 PKR = 0.00357143 USD
-    //
-    // For PKR -> PKR gateways this remains null.
-    // =====================================================
-
     exchangeRate: {
       type: Number,
       default: null,
@@ -133,8 +98,9 @@ const salePaymentSchema = new mongoose.Schema(
     },
 
     // =====================================================
-    // PAYMENT METHOD
+    // PAYMENT METHOD  ← UPDATED
     // =====================================================
+    // Simple offline methods only for now
 
     paymentMethod: {
       type: String,
@@ -143,7 +109,8 @@ const salePaymentSchema = new mongoose.Schema(
         "bank",
         "card",
         "cheque",
-        "online",
+        "jazzcash",
+        "easypaisa",
         "credit",
         "other",
       ],
@@ -151,7 +118,7 @@ const salePaymentSchema = new mongoose.Schema(
     },
 
     // =====================================================
-    // PAYMENT GATEWAY
+    // PAYMENT GATEWAY (null for offline payments)
     // =====================================================
 
     gateway: {
@@ -173,13 +140,8 @@ const salePaymentSchema = new mongoose.Schema(
 
     status: {
       type: String,
-      enum: [
-        "pending",
-        "completed",
-        "failed",
-        "cancelled",
-      ],
-      default: "pending",
+      enum: ["pending", "completed", "failed", "cancelled"],
+      default: "completed", // offline payments are completed immediately
       index: true,
     },
 
@@ -229,7 +191,7 @@ const salePaymentSchema = new mongoose.Schema(
 
     paymentDate: {
       type: Date,
-      default: null,
+      default: Date.now,
     },
 
     // =====================================================
@@ -274,9 +236,7 @@ salePaymentSchema.index(
     businessType: 1,
     paymentNumber: 1,
   },
-  {
-    unique: true,
-  }
+  { unique: true }
 );
 
 salePaymentSchema.index({
@@ -305,9 +265,6 @@ salePaymentSchema.index({
   gatewayOrderId: 1,
 });
 
-const SalePayment = mongoose.model(
-  "SalePayment",
-  salePaymentSchema
-);
+const SalePayment = mongoose.model("SalePayment", salePaymentSchema);
 
 export default SalePayment;

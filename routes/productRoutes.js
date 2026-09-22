@@ -6,32 +6,25 @@ import {
   getProductById,
   updateProduct,
   deleteProduct,
-  restoreProduct,
 } from "../controllers/productController.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
 import { authorize } from "../middlewares/permission.middleware.js";
-
+import validate from "../middlewares/validate.js";
 import upload from "../middlewares/upload.middleware.js";
+
+import {
+  createProductSchema,
+  updateProductSchema,
+} from "../validations/product.validation.js";
 
 const router = express.Router();
 
 // ======================================================
 // CREATE PRODUCT
-// ======================================================
-//
-// Permissions:
-// - Super Admin
-// - Admin
-// - Manager
-//
-// Business / BusinessType:
-// - Super Admin can select them
-// - Admin/Manager get them from authenticated user
-//
-// Images:
-// - Maximum 10 images
-//
+// POST /
+// - images: multipart field "images" (max 10)
+// - validate runs AFTER upload so FormData body fields exist
 // ======================================================
 
 router.post(
@@ -39,74 +32,29 @@ router.post(
   protect,
   authorize("products.create"),
   upload.array("images", 10),
+  validate(createProductSchema),
   createProduct
 );
 
 // ======================================================
 // GET ALL PRODUCTS
-// ======================================================
-//
-// Supports:
-// - pagination
-// - search
-// - category
-// - brand
-// - model
-// - productType
-// - isActive
-// - stockStatus
-// - business
-// - businessType
-//
-// Tenant isolation is handled inside controller.
-//
+// GET /?page&limit&search&category&brand&model&productType&isActive&trackSerial&stockStatus
 // ======================================================
 
-router.get(
-  "/",
-  protect,
-  authorize("products.read"),
-  getAllProducts
-);
+router.get("/", protect, authorize("products.read"), getAllProducts);
 
 // ======================================================
 // GET PRODUCT BY ID
-// ======================================================
-//
-// Tenant isolation is handled inside controller.
-//
-// Super Admin:
-// - Can optionally use business/businessType query
-//
-// Admin / Manager:
-// - Automatically restricted to their business/businessType
-//
+// GET /:id
 // ======================================================
 
-router.get(
-  "/:id",
-  protect,
-  authorize("products.read"),
-  getProductById
-);
+router.get("/:id", protect, authorize("products.read"), getProductById);
 
 // ======================================================
 // UPDATE PRODUCT
-// ======================================================
-//
-// Supports:
-// - normal product fields
-// - brand/model/category changes
-// - price changes
-// - boolean fields
-// - remove old images
-// - upload new images
-//
-// Images:
-// - Maximum 10 images per request
-//
-// Tenant isolation is handled inside controller.
-//
+// PATCH /:id
+// - images: multipart field "images" (max 10)
+// - removeImages: optional (string | JSON array of publicIds)
 // ======================================================
 
 router.patch(
@@ -114,21 +62,13 @@ router.patch(
   protect,
   authorize("products.update"),
   upload.array("images", 10),
+  validate(updateProductSchema),
   updateProduct
 );
 
 // ======================================================
-// DELETE PRODUCT
-// ======================================================
-//
-// Soft delete.
-//
-// Product:
-//   isActive = false
-//
-// Inventory:
-//   isActive = false
-//
+// DELETE PRODUCT (soft — isActive: false)
+// DELETE /:id
 // ======================================================
 
 router.delete(
@@ -140,22 +80,8 @@ router.delete(
 
 // ======================================================
 // RESTORE PRODUCT
-// ======================================================
-//
-// Restores:
-// - Product
-// - Product inventory
-//
-// Uses products.update permission because restore
-// is an update operation.
-//
+// PATCH /:id/restore
 // ======================================================
 
-router.patch(
-  "/:id/restore",
-  protect,
-  authorize("products.update"),
-  restoreProduct
-);
 
 export default router;

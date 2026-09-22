@@ -9,6 +9,7 @@ import {
   updateProductStock,
   deleteProductInventory,
   restoreProductInventory,
+  scanProductInventory,          // ← NEW
 } from "../controllers/productInventoryController.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
@@ -16,6 +17,9 @@ import { authorize } from "../middlewares/permission.middleware.js";
 
 const router = express.Router();
 
+// =====================================================
+// CREATE
+// =====================================================
 router.post(
   "/",
   protect,
@@ -23,6 +27,20 @@ router.post(
   createProductInventory
 );
 
+// =====================================================
+// SCAN / LOOKUP BY IMEI OR UNIT BARCODE  (NEW)
+// Must be placed BEFORE /:id routes
+// =====================================================
+router.get(
+  "/scan",
+  protect,
+  authorize("inventory.read"),
+  scanProductInventory
+);
+
+// =====================================================
+// GET ALL
+// =====================================================
 router.get(
   "/",
   protect,
@@ -30,6 +48,9 @@ router.get(
   getAllProductInventory
 );
 
+// =====================================================
+// GET BY PRODUCT
+// =====================================================
 router.get(
   "/product/:productId",
   protect,
@@ -37,6 +58,9 @@ router.get(
   getProductInventory
 );
 
+// =====================================================
+// GET BY ID
+// =====================================================
 router.get(
   "/:id",
   protect,
@@ -44,6 +68,9 @@ router.get(
   getProductInventoryById
 );
 
+// =====================================================
+// UPDATE
+// =====================================================
 router.patch(
   "/:id",
   protect,
@@ -51,6 +78,9 @@ router.patch(
   updateProductInventory
 );
 
+// =====================================================
+// UPDATE STOCK
+// =====================================================
 router.patch(
   "/:id/stock",
   protect,
@@ -58,6 +88,9 @@ router.patch(
   updateProductStock
 );
 
+// =====================================================
+// DELETE (soft)
+// =====================================================
 router.delete(
   "/:id",
   protect,
@@ -65,6 +98,9 @@ router.delete(
   deleteProductInventory
 );
 
+// =====================================================
+// RESTORE
+// =====================================================
 router.patch(
   "/:id/restore",
   protect,

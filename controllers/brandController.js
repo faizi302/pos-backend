@@ -8,88 +8,40 @@ import {
   errorResponse,
 } from "../utils/apiResponse.js";
 
+import {
+  getTenantContext,
+  buildTenantQuery,
+  isValidObjectId,
+} from "../utils/tenantContext.js";
+
 // =====================================================
 // HELPERS
 // =====================================================
 
-const getRoleSlug = (req) => {
-  return req.user?.role?.slug || req.user?.role;
-};
+const roleOf = (t) => t?.role?.toLowerCase?.() || "";
+const isSuperAdmin = (t) => t?.isSuperAdmin === true;
+const isAdmin = (t) => roleOf(t) === "admin";
+const canWrite = (t) => isAdmin(t) || isSuperAdmin(t);
 
-const isSuperAdmin = (req) => {
-  return getRoleSlug(req) === "super-admin";
-};
+const populateBrand = (query) =>
+  query
+    .populate("tenantOwner", "name email")
+    .populate("business", "name")
+    .populate("businessType", "name business")
+    .populate("createdBy", "name email")
+    .populate("updatedBy", "name email");
 
-const isAdmin = (req) => {
-  return getRoleSlug(req) === "admin";
-};
-
-// =====================================================
-// GET BUSINESS CONTEXT
-// =====================================================
-//
-// Admin:
-// business/businessType always come from req.user.
-//
-// Super Admin:
-// business/businessType may be supplied in the request.
-//
-// =====================================================
-
-const getBusinessContext = async (req, businessId, businessTypeId) => {
-  const role = getRoleSlug(req);
-
-  if (role === "admin") {
-    if (!req.user.business) {
-      throw new Error("Admin is not assigned to a business");
-    }
-
-    if (!req.user.businessType) {
-      throw new Error("Admin is not assigned to a business type");
-    }
-
-    return {
-      businessId: req.user.business,
-      businessTypeId: req.user.businessType,
-    };
+const validateBusinessContext = async (businessId, businessTypeId) => {
+  if (!isValidObjectId(businessId)) {
+    return { error: { status: 400, message: "Invalid business ID" } };
+  }
+  if (!isValidObjectId(businessTypeId)) {
+    return { error: { status: 400, message: "Invalid business type ID" } };
   }
 
-  if (role === "super-admin") {
-    if (!businessId || !businessTypeId) {
-      throw new Error(
-        "Business and business type are required for Super Admin"
-      );
-    }
-
-    return {
-      businessId,
-      businessTypeId,
-    };
-  }
-
-  throw new Error("You are not authorized to manage brands");
-};
-
-// =====================================================
-// VALIDATE BUSINESS + BUSINESS TYPE
-// =====================================================
-
-const validateBusinessContext = async (
-  businessId,
-  businessTypeId
-) => {
-  const business = await Business.findOne({
-    _id: businessId,
-    isActive: true,
-  });
-
+  const business = await Business.findOne({ _id: businessId, isActive: true });
   if (!business) {
-    return {
-      error: {
-        status: 404,
-        message: "Business not found or inactive",
-      },
-    };
+    return { error: { status: 404, message: "Business not found or inactive" } };
   }
 
   const businessType = await BusinessType.findOne({
@@ -97,7 +49,6 @@ const validateBusinessContext = async (
     business: businessId,
     isActive: true,
   });
-
   if (!businessType) {
     return {
       error: {
@@ -108,98 +59,137 @@ const validateBusinessContext = async (
     };
   }
 
-  return {
-    business,
-    businessType,
-  };
+  return { business, businessType };
+};
+
+const validateTenantOwner = async (tenantOwnerId, businessId, businessTypeId) => {
+  if (!isValidObjectId(tenantOwnerId)) {
+    return { error: { status: 400, message: "Invalid tenant owner ID" } };
+  }
+
+  const owner = await User.findById(tenantOwnerId)
+    .select("_id role business businessType status")
+    .populate({ path: "role", select: "slug" });
+
+  if (!owner) {
+    return { error: { status: 404, message: "Tenant owner not found" } };
+  }
+  if (owner.role?.slug?.toLowerCase() !== "admin") {
+    return { error: { status: 400, message: "Tenant owner must be an Admin" } };
+  }
+  if (owner.status !== "active") {
+    return { error: { status: 400, message: "Tenant owner is not active" } };
+  }
+  if (owner.business?.toString() !== String(businessId)) {
+    return {
+      error: {
+        status: 400,
+        message: "Tenant owner does not belong to this business",
+      },
+    };
+  }
+  if (owner.businessType?.toString() !== String(businessTypeId)) {
+    return {
+      error: {
+        status: 400,
+        message: "Tenant owner does not belong to this business type",
+      },
+    };
+  }
+
+  return { owner };
+};
+
+const brandTenantFilter = (id, tenant) => {
+  const filter = { _id: id, ...buildTenantQuery(tenant) };
+  if (!isSuperAdmin(tenant)) {
+    if (tenant.business) filter.business = tenant.business;
+    if (tenant.businessType) filter.businessType = tenant.businessType;
+  }
+  return filter;
 };
 
 // =====================================================
-// POPULATE BRAND
-// =====================================================
-
-const populateBrand = (query) => {
-  return query
-    .populate({
-      path: "business",
-      select: "name",
-    })
-    .populate({
-      path: "businessType",
-      select: "name business",
-    })
-    .populate({
-      path: "createdBy",
-      select: "name email",
-    })
-    .populate({
-      path: "updatedBy",
-      select: "name email",
-    });
-};
-
-// =====================================================
-// CREATE BRAND
+// CREATE
 // =====================================================
 
 export const createBrand = async (req, res, next) => {
   try {
-    const {
-      name,
-      description,
-      isActive,
-      business,
-      businessType,
-    } = req.body;
+    const tenant = await getTenantContext(req);
 
+    if (!canWrite(tenant)) {
+      return errorResponse(res, 403, "You are not authorized to create brands");
+    }
+
+    const { name, description, isActive } = req.body;
     if (!name?.trim()) {
-      return errorResponse(
-        res,
-        400,
-        "Brand name is required"
-      );
+      return errorResponse(res, 400, "Brand name is required");
     }
 
-    const context = await getBusinessContext(
-      req,
-      business,
-      businessType
-    );
+    let businessId;
+    let businessTypeId;
+    let tenantOwner;
 
-    const {
-      businessId,
-      businessTypeId,
-    } = context;
+    if (isAdmin(tenant)) {
+      if (!tenant.tenantOwner || !tenant.business || !tenant.businessType) {
+        return errorResponse(
+          res,
+          400,
+          "Admin tenant context (owner, business, business type) is incomplete"
+        );
+      }
+      tenantOwner = tenant.tenantOwner;
+      businessId = tenant.business;
+      businessTypeId = tenant.businessType;
+    } else {
+      businessId = req.body.business;
+      businessTypeId = req.body.businessType;
+      tenantOwner = req.body.tenantOwner;
 
-    // -------------------------------------------------
-    // VALIDATE BUSINESS + BUSINESS TYPE
-    // -------------------------------------------------
-
-    const validation = await validateBusinessContext(
-      businessId,
-      businessTypeId
-    );
-
-    if (validation.error) {
-      return errorResponse(
-        res,
-        validation.error.status,
-        validation.error.message
-      );
+      if (!businessId || !businessTypeId) {
+        return errorResponse(
+          res,
+          400,
+          "Business and business type are required for Super Admin"
+        );
+      }
+      if (!tenantOwner) {
+        return errorResponse(
+          res,
+          400,
+          "Tenant owner is required for Super Admin"
+        );
+      }
     }
 
-    // -------------------------------------------------
-    // CHECK DUPLICATE
-    // -------------------------------------------------
+    const ctx = await validateBusinessContext(businessId, businessTypeId);
+    if (ctx.error) {
+      return errorResponse(res, ctx.error.status, ctx.error.message);
+    }
+
+    if (isSuperAdmin(tenant)) {
+      const ownerCheck = await validateTenantOwner(
+        tenantOwner,
+        businessId,
+        businessTypeId
+      );
+      if (ownerCheck.error) {
+        return errorResponse(
+          res,
+          ownerCheck.error.status,
+          ownerCheck.error.message
+        );
+      }
+    }
 
     const trimmedName = name.trim();
-
-    const existingBrand = await Brand.findOne({
+    const duplicate = await Brand.findOne({
+      tenantOwner,
       business: businessId,
+      businessType: businessTypeId,
       name: trimmedName,
     });
-
-    if (existingBrand) {
+    if (duplicate) {
       return errorResponse(
         res,
         409,
@@ -207,34 +197,19 @@ export const createBrand = async (req, res, next) => {
       );
     }
 
-    // -------------------------------------------------
-    // CREATE
-    // -------------------------------------------------
-
     const brand = await Brand.create({
+      tenantOwner,
       business: businessId,
       businessType: businessTypeId,
       createdBy: req.user._id,
       name: trimmedName,
       description: description?.trim() || "",
-      isActive:
-        isActive !== undefined
-          ? Boolean(isActive)
-          : true,
+      isActive: isActive !== undefined ? Boolean(isActive) : true,
     });
 
-    const populatedBrand = await populateBrand(
-      Brand.findById(brand._id)
-    );
-
-    return successResponse(
-      res,
-      201,
-      "Brand created successfully",
-      populatedBrand
-    );
+    const populated = await populateBrand(Brand.findById(brand._id));
+    return successResponse(res, 201, "Brand created successfully", populated);
   } catch (error) {
-    // Mongo duplicate key protection
     if (error.code === 11000) {
       return errorResponse(
         res,
@@ -242,126 +217,84 @@ export const createBrand = async (req, res, next) => {
         "A brand with this name already exists in your business"
       );
     }
-
     next(error);
   }
 };
 
 // =====================================================
-// GET ALL BRANDS
-// =====================================================
-//
-// Admin:
-// ONLY his business.
-//
-// Super Admin:
-// Can optionally filter by business.
-//
+// GET ALL
 // =====================================================
 
 export const getAllBrands = async (req, res, next) => {
   try {
-    const { business, businessType, search } = req.query;
+    const tenant = await getTenantContext(req);
+    const { business, businessType, tenantOwner, search, isActive } = req.query;
 
-    const filter = {};
+    const filter = { ...buildTenantQuery(tenant) };
 
-    // -------------------------------------------------
-    // ADMIN ISOLATION
-    // -------------------------------------------------
-
-    if (isAdmin(req)) {
-      if (!req.user.business) {
+    if (!isSuperAdmin(tenant)) {
+      if (!tenant.business || !tenant.businessType) {
         return errorResponse(
           res,
           400,
-          "Admin is not assigned to a business"
+          "Tenant is not assigned to a business / business type"
         );
       }
-
-      filter.business = req.user.business;
-
-      if (req.user.businessType) {
-        filter.businessType = req.user.businessType;
-      }
-    }
-
-    // -------------------------------------------------
-    // SUPER ADMIN FILTER
-    // -------------------------------------------------
-
-    if (isSuperAdmin(req)) {
+      filter.business = tenant.business;
+      filter.businessType = tenant.businessType;
+    } else {
       if (business) {
+        if (!isValidObjectId(business)) {
+          return errorResponse(res, 400, "Invalid business ID");
+        }
         filter.business = business;
       }
-
       if (businessType) {
+        if (!isValidObjectId(businessType)) {
+          return errorResponse(res, 400, "Invalid business type ID");
+        }
         filter.businessType = businessType;
+      }
+      if (tenantOwner) {
+        if (!isValidObjectId(tenantOwner)) {
+          return errorResponse(res, 400, "Invalid tenant owner ID");
+        }
+        filter.tenantOwner = tenantOwner;
       }
     }
 
-    // -------------------------------------------------
-    // SEARCH
-    // -------------------------------------------------
-
     if (search?.trim()) {
-      filter.name = {
-        $regex: search.trim(),
-        $options: "i",
-      };
+      filter.name = { $regex: search.trim(), $options: "i" };
+    }
+    if (isActive !== undefined) {
+      filter.isActive = isActive === "true" || isActive === true;
     }
 
-    const brands = await populateBrand(
-      Brand.find(filter)
-    ).sort({ name: 1 });
-
-    return successResponse(
-      res,
-      200,
-      "Brands fetched successfully",
-      brands
-    );
+    const brands = await populateBrand(Brand.find(filter)).sort({ name: 1 });
+    return successResponse(res, 200, "Brands fetched successfully", brands);
   } catch (error) {
     next(error);
   }
 };
 
 // =====================================================
-// GET BRANDS BY BUSINESS TYPE
+// GET BY BUSINESS TYPE
 // =====================================================
 
-export const getBrandsByBusinessType = async (
-  req,
-  res,
-  next
-) => {
+export const getBrandsByBusinessType = async (req, res, next) => {
   try {
+    const tenant = await getTenantContext(req);
     const { businessTypeId } = req.params;
 
-    if (!businessTypeId) {
-      return errorResponse(
-        res,
-        400,
-        "Business type ID is required"
-      );
+    if (!businessTypeId || !isValidObjectId(businessTypeId)) {
+      return errorResponse(res, 400, "Valid business type ID is required");
     }
 
-    // -------------------------------------------------
-    // ADMIN
-    // -------------------------------------------------
-
-    if (isAdmin(req)) {
-      if (!req.user.business) {
-        return errorResponse(
-          res,
-          400,
-          "Admin is not assigned to a business"
-        );
+    if (!isSuperAdmin(tenant)) {
+      if (!tenant.tenantOwner || !tenant.business || !tenant.businessType) {
+        return errorResponse(res, 400, "Incomplete tenant context");
       }
-
-      if (
-        req.user.businessType?.toString() !==
-        businessTypeId.toString()
-      ) {
+      if (String(tenant.businessType) !== String(businessTypeId)) {
         return errorResponse(
           res,
           403,
@@ -371,353 +304,215 @@ export const getBrandsByBusinessType = async (
 
       const businessType = await BusinessType.findOne({
         _id: businessTypeId,
-        business: req.user.business,
+        business: tenant.business,
         isActive: true,
       });
-
       if (!businessType) {
-        return errorResponse(
-          res,
-          404,
-          "Business type not found"
-        );
+        return errorResponse(res, 404, "Business type not found");
       }
 
       const brands = await populateBrand(
         Brand.find({
-          business: req.user.business,
+          tenantOwner: tenant.tenantOwner,
+          business: tenant.business,
           businessType: businessTypeId,
           isActive: true,
         })
       ).sort({ name: 1 });
 
-      return successResponse(
-        res,
-        200,
-        "Brands fetched successfully",
-        brands
-      );
+      return successResponse(res, 200, "Brands fetched successfully", brands);
     }
 
-    // -------------------------------------------------
-    // SUPER ADMIN
-    // -------------------------------------------------
-
-    if (isSuperAdmin(req)) {
-      const businessType = await BusinessType.findById(
-        businessTypeId
-      );
-
-      if (!businessType) {
-        return errorResponse(
-          res,
-          404,
-          "Business type not found"
-        );
-      }
-
-      if (!businessType.isActive) {
-        return errorResponse(
-          res,
-          400,
-          "Business type is inactive"
-        );
-      }
-
-      const brands = await populateBrand(
-        Brand.find({
-          business: businessType.business,
-          businessType: businessTypeId,
-          isActive: true,
-        })
-      ).sort({ name: 1 });
-
-      return successResponse(
-        res,
-        200,
-        "Brands fetched successfully",
-        brands
-      );
+    const businessType = await BusinessType.findById(businessTypeId);
+    if (!businessType) {
+      return errorResponse(res, 404, "Business type not found");
+    }
+    if (!businessType.isActive) {
+      return errorResponse(res, 400, "Business type is inactive");
     }
 
-    return errorResponse(
-      res,
-      403,
-      "You are not authorized to access brands"
-    );
+    const brands = await populateBrand(
+      Brand.find({
+        business: businessType.business,
+        businessType: businessTypeId,
+        isActive: true,
+      })
+    ).sort({ name: 1 });
+
+    return successResponse(res, 200, "Brands fetched successfully", brands);
   } catch (error) {
     next(error);
   }
 };
 
 // =====================================================
-// GET BRAND BY ID
+// GET BY ID
 // =====================================================
 
 export const getBrandById = async (req, res, next) => {
   try {
+    const tenant = await getTenantContext(req);
     const { id } = req.params;
 
-    const filter = {
-      _id: id,
-    };
-
-    // -------------------------------------------------
-    // ADMIN ISOLATION
-    // -------------------------------------------------
-
-    if (isAdmin(req)) {
-      filter.business = req.user.business;
-
-      if (req.user.businessType) {
-        filter.businessType = req.user.businessType;
-      }
+    if (!isValidObjectId(id)) {
+      return errorResponse(res, 400, "Invalid brand ID");
     }
 
     const brand = await populateBrand(
-      Brand.findOne(filter)
+      Brand.findOne(brandTenantFilter(id, tenant))
     );
-
     if (!brand) {
-      return errorResponse(
-        res,
-        404,
-        "Brand not found"
-      );
+      return errorResponse(res, 404, "Brand not found");
     }
 
-    return successResponse(
-      res,
-      200,
-      "Brand fetched successfully",
-      brand
-    );
+    return successResponse(res, 200, "Brand fetched successfully", brand);
   } catch (error) {
     next(error);
   }
 };
 
 // =====================================================
-// UPDATE BRAND
+// UPDATE
 // =====================================================
 
 export const updateBrand = async (req, res, next) => {
   try {
+    const tenant = await getTenantContext(req);
+
+    if (!canWrite(tenant)) {
+      return errorResponse(res, 403, "You are not authorized to update brands");
+    }
+
     const { id } = req.params;
-
-    const {
-      name,
-      description,
-      isActive,
-      businessType,
-      business,
-    } = req.body;
-
-    // -------------------------------------------------
-    // FIND WITH TENANT FILTER
-    // -------------------------------------------------
-
-    const filter = {
-      _id: id,
-    };
-
-    if (isAdmin(req)) {
-      filter.business = req.user.business;
-      filter.businessType = req.user.businessType;
-    } else if (!isSuperAdmin(req)) {
-      return errorResponse(
-        res,
-        403,
-        "You are not authorized to update brands"
-      );
+    if (!isValidObjectId(id)) {
+      return errorResponse(res, 400, "Invalid brand ID");
     }
 
-    const brand = await Brand.findOne(filter);
-
+    const brand = await Brand.findOne(brandTenantFilter(id, tenant));
     if (!brand) {
-      return errorResponse(
-        res,
-        404,
-        "Brand not found"
-      );
+      return errorResponse(res, 404, "Brand not found");
     }
 
-    // -------------------------------------------------
-    // ADMIN CANNOT CHANGE BUSINESS OWNERSHIP
-    // -------------------------------------------------
+    const { name, description, isActive, business, businessType, tenantOwner } =
+      req.body;
 
-    if (isAdmin(req)) {
+    if (isAdmin(tenant)) {
       if (
         business !== undefined ||
-        businessType !== undefined
+        businessType !== undefined ||
+        tenantOwner !== undefined
       ) {
         return errorResponse(
           res,
           403,
-          "You cannot change the business or business type of a brand"
+          "You cannot change the tenant, business, or business type of a brand"
         );
       }
     }
 
-    // -------------------------------------------------
-    // SUPER ADMIN
-    // -------------------------------------------------
-
+    let finalTenantOwner = brand.tenantOwner;
     let finalBusiness = brand.business;
     let finalBusinessType = brand.businessType;
 
-    if (isSuperAdmin(req)) {
-      if (business !== undefined) {
-        finalBusiness = business;
+    if (isSuperAdmin(tenant)) {
+      if (tenantOwner !== undefined) finalTenantOwner = tenantOwner;
+      if (business !== undefined) finalBusiness = business;
+      if (businessType !== undefined) finalBusinessType = businessType;
+
+      if (!finalTenantOwner) {
+        return errorResponse(res, 400, "Tenant owner is required");
       }
 
-      if (businessType !== undefined) {
-        finalBusinessType = businessType;
+      const ctx = await validateBusinessContext(finalBusiness, finalBusinessType);
+      if (ctx.error) {
+        return errorResponse(res, ctx.error.status, ctx.error.message);
       }
 
-      const validation = await validateBusinessContext(
+      const ownerCheck = await validateTenantOwner(
+        finalTenantOwner,
         finalBusiness,
         finalBusinessType
       );
-
-      if (validation.error) {
+      if (ownerCheck.error) {
         return errorResponse(
           res,
-          validation.error.status,
-          validation.error.message
+          ownerCheck.error.status,
+          ownerCheck.error.message
         );
       }
     }
 
-    // -------------------------------------------------
-    // NAME
-    // -------------------------------------------------
-
-    const finalName =
-      name !== undefined
-        ? name.trim()
-        : brand.name;
-
+    const finalName = name !== undefined ? name.trim() : brand.name;
     if (!finalName) {
-      return errorResponse(
-        res,
-        400,
-        "Brand name cannot be empty"
-      );
+      return errorResponse(res, 400, "Brand name cannot be empty");
     }
 
-    // -------------------------------------------------
-    // DUPLICATE
-    // -------------------------------------------------
-
-    const duplicateBrand = await Brand.findOne({
+    const duplicate = await Brand.findOne({
       _id: { $ne: brand._id },
+      tenantOwner: finalTenantOwner,
       business: finalBusiness,
+      businessType: finalBusinessType,
       name: finalName,
     });
-
-    if (duplicateBrand) {
+    if (duplicate) {
       return errorResponse(
         res,
         409,
-        "A brand with this name already exists in this business"
+        "A brand with this name already exists in this tenant"
       );
     }
 
-    // -------------------------------------------------
-    // UPDATE
-    // -------------------------------------------------
-
     brand.name = finalName;
+    if (description !== undefined) brand.description = description.trim();
+    if (isActive !== undefined) brand.isActive = Boolean(isActive);
 
-    if (description !== undefined) {
-      brand.description = description.trim();
-    }
-
-    if (isActive !== undefined) {
-      brand.isActive = Boolean(isActive);
-    }
-
-    if (isSuperAdmin(req)) {
+    if (isSuperAdmin(tenant)) {
+      brand.tenantOwner = finalTenantOwner;
       brand.business = finalBusiness;
       brand.businessType = finalBusinessType;
     }
 
     brand.updatedBy = req.user._id;
-
     await brand.save();
 
-    const populatedBrand = await populateBrand(
-      Brand.findById(brand._id)
-    );
-
-    return successResponse(
-      res,
-      200,
-      "Brand updated successfully",
-      populatedBrand
-    );
+    const populated = await populateBrand(Brand.findById(brand._id));
+    return successResponse(res, 200, "Brand updated successfully", populated);
   } catch (error) {
     if (error.code === 11000) {
       return errorResponse(
         res,
         409,
-        "A brand with this name already exists in this business"
+        "A brand with this name already exists in this tenant"
       );
     }
-
     next(error);
   }
 };
 
 // =====================================================
-// DELETE BRAND
+// DELETE
 // =====================================================
 
 export const deleteBrand = async (req, res, next) => {
   try {
+    const tenant = await getTenantContext(req);
+
+    if (!canWrite(tenant)) {
+      return errorResponse(res, 403, "You are not authorized to delete brands");
+    }
+
     const { id } = req.params;
-
-    const filter = {
-      _id: id,
-    };
-
-    // -------------------------------------------------
-    // ADMIN ISOLATION
-    // -------------------------------------------------
-
-    if (isAdmin(req)) {
-      filter.business = req.user.business;
-      filter.businessType = req.user.businessType;
-    } else if (!isSuperAdmin(req)) {
-      return errorResponse(
-        res,
-        403,
-        "You are not authorized to delete brands"
-      );
+    if (!isValidObjectId(id)) {
+      return errorResponse(res, 400, "Invalid brand ID");
     }
 
-    const brand = await Brand.findOne(filter);
-
+    const brand = await Brand.findOne(brandTenantFilter(id, tenant));
     if (!brand) {
-      return errorResponse(
-        res,
-        404,
-        "Brand not found"
-      );
+      return errorResponse(res, 404, "Brand not found");
     }
-
-    // -------------------------------------------------
-    // DELETE
-    // -------------------------------------------------
 
     await Brand.findByIdAndDelete(brand._id);
-
-    return successResponse(
-      res,
-      200,
-      "Brand deleted successfully"
-    );
+    return successResponse(res, 200, "Brand deleted successfully");
   } catch (error) {
     next(error);
   }
