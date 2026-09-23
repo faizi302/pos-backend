@@ -53,6 +53,42 @@ const userSchema = new mongoose.Schema(
             },
         },
 
+        // Business / Admin Logo
+        logo: {
+            url: {
+                type: String,
+                trim: true,
+                default: null,
+            },
+
+            publicId: {
+                type: String,
+                trim: true,
+                default: null,
+            },
+        },
+
+        country: {
+            type: String,
+            trim: true,
+            maxlength: [100, "Country cannot exceed 100 characters"],
+            default: null,
+        },
+
+        city: {
+            type: String,
+            trim: true,
+            maxlength: [100, "City cannot exceed 100 characters"],
+            default: null,
+        },
+
+        address: {
+            type: String,
+            trim: true,
+            maxlength: [500, "Address cannot exceed 500 characters"],
+            default: null,
+        },
+
         // =====================================================
         // ROLE
         // =====================================================
@@ -71,6 +107,7 @@ const userSchema = new mongoose.Schema(
         business: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "Business",
+            required: [true, "User business is required"],
             default: null,
             index: true,
         },
@@ -78,6 +115,7 @@ const userSchema = new mongoose.Schema(
         businessType: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "BusinessType",
+             required: [true, "BusinessType role is required"],
             default: null,
             index: true,
         },

@@ -1,3 +1,4 @@
+
 import Joi from "joi";
 
 // =====================================================
@@ -20,6 +21,7 @@ const objectId = Joi.string()
 const booleanValue = Joi.alternatives()
   .try(
     Joi.boolean(),
+
     Joi.string()
       .valid("true", "false", "1", "0")
       .custom((value) => value === "true" || value === "1")
@@ -29,43 +31,7 @@ const booleanValue = Joi.alternatives()
   });
 
 // =====================================================
-// NUMBER — JSON + multipart strings
-// =====================================================
-
-const numberValue = Joi.alternatives()
-  .try(
-    Joi.number().min(0),
-    Joi.string()
-      .pattern(/^\d+(\.\d+)?$/)
-      .custom((value) => Number(value))
-  )
-  .messages({
-    "number.base": "Value must be a number",
-    "number.min": "Value cannot be negative",
-    "alternatives.match": "Value must be a number",
-  });
-
-const percentValue = Joi.alternatives()
-  .try(
-    Joi.number().min(0).max(100),
-    Joi.string()
-      .pattern(/^\d+(\.\d+)?$/)
-      .custom((value) => {
-        const n = Number(value);
-        if (n < 0 || n > 100) {
-          throw new Error("Value must be between 0 and 100");
-        }
-        return n;
-      })
-  )
-  .messages({
-    "number.min": "Value cannot be negative",
-    "number.max": "Value cannot exceed 100",
-    "alternatives.match": "Value must be a number between 0 and 100",
-  });
-
-// =====================================================
-// ENUMS (match Product.js model)
+// ENUMS
 // =====================================================
 
 const BARCODE_TYPES = [
@@ -109,21 +75,24 @@ const UNITS = [
 ];
 
 // =====================================================
-// SHARED FIELD DEFS
-// =====================================================
-//
-// Admin / Manager:
-//   business, businessType, tenantOwner → from tenantContext (optional in body)
-// Super Admin:
-//   may send business, businessType, tenantOwner (enforced in controller)
-//
+// SHARED PRODUCT FIELDS
 // =====================================================
 
 const productFields = {
-  // Tenant context (optional for Admin; controller resolves)
+  // ===================================================
+  // TENANT CONTEXT
+  // Usually resolved from tenantContext/controller
+  // ===================================================
+
   tenantOwner: objectId.optional(),
+
   business: objectId.optional(),
+
   businessType: objectId.optional(),
+
+  // ===================================================
+  // PRODUCT RELATIONS
+  // ===================================================
 
   category: objectId.messages({
     "any.required": "Category is required",
@@ -137,30 +106,52 @@ const productFields = {
     "string.length": "Invalid brand ID",
   }),
 
-  model: objectId.allow("", null).optional().messages({
-    "string.hex": "Invalid model ID",
-    "string.length": "Invalid model ID",
-  }),
+  model: objectId
+    .allow("", null)
+    .optional()
+    .messages({
+      "string.hex": "Invalid model ID",
+      "string.length": "Invalid model ID",
+    }),
 
-  name: Joi.string().trim().min(2).max(200).allow("", null).optional().messages({
-    "string.min": "Product name must be at least 2 characters",
-    "string.max": "Product name cannot exceed 200 characters",
-  }),
+  // ===================================================
+  // BASIC PRODUCT INFORMATION
+  // ===================================================
 
-  slug: Joi.string().trim().lowercase().max(250).allow("", null).optional().messages({
-    "string.max": "Product slug cannot exceed 250 characters",
-  }),
+  name: Joi.string()
+    .trim()
+    .min(2)
+    .max(200)
+    .messages({
+      "string.empty": "Product name is required",
+      "string.min": "Product name must be at least 2 characters",
+      "string.max": "Product name cannot exceed 200 characters",
+      "any.required": "Product name is required",
+    }),
 
-  sku: Joi.string().trim().uppercase().min(2).max(100).messages({
-    "string.empty": "SKU is required",
-    "string.min": "SKU must be at least 2 characters",
-    "string.max": "SKU cannot exceed 100 characters",
-    "any.required": "SKU is required",
-  }),
+  // ===================================================
+  // BACKEND GENERATED
+  // ===================================================
+  // slug and sku are intentionally NOT accepted
+  // from the frontend.
+  //
+  // Backend generates:
+  // slug -> product-name based URL slug
+  // sku  -> tenant-scoped unique SKU
+  // ===================================================
 
-  barcode: Joi.string().trim().max(100).allow("", null).optional().messages({
-    "string.max": "Barcode cannot exceed 100 characters",
-  }),
+  // ===================================================
+  // BARCODE
+  // ===================================================
+
+  barcode: Joi.string()
+    .trim()
+    .max(100)
+    .allow("", null)
+    .optional()
+    .messages({
+      "string.max": "Barcode cannot exceed 100 characters",
+    }),
 
   barcodeType: Joi.string()
     .valid(...BARCODE_TYPES)
@@ -169,11 +160,28 @@ const productFields = {
       "any.only": `Barcode type must be one of: ${BARCODE_TYPES.join(", ")}`,
     }),
 
-  shortDescription: Joi.string().trim().max(500).allow("", null).optional().messages({
-    "string.max": "Short description cannot exceed 500 characters",
-  }),
+  // ===================================================
+  // DESCRIPTION
+  // ===================================================
 
-  description: Joi.string().trim().allow("", null).optional(),
+  shortDescription: Joi.string()
+    .trim()
+    .max(500)
+    .allow("", null)
+    .optional()
+    .messages({
+      "string.max":
+        "Short description cannot exceed 500 characters",
+    }),
+
+  description: Joi.string()
+    .trim()
+    .allow("", null)
+    .optional(),
+
+  // ===================================================
+  // PRODUCT TYPE
+  // ===================================================
 
   productType: Joi.string()
     .valid(...PRODUCT_TYPES)
@@ -182,6 +190,10 @@ const productFields = {
       "any.only": `Product type must be one of: ${PRODUCT_TYPES.join(", ")}`,
     }),
 
+  // ===================================================
+  // UNIT
+  // ===================================================
+
   unit: Joi.string()
     .valid(...UNITS)
     .default("piece")
@@ -189,19 +201,17 @@ const productFields = {
       "any.only": `Unit must be one of: ${UNITS.join(", ")}`,
     }),
 
-  purchasePrice: numberValue.default(0),
-
-  salePrice: numberValue.messages({
-    "any.required": "Sale price is required",
-  }),
-
-  discount: percentValue.default(0),
-
-  tax: percentValue.default(0),
+  // ===================================================
+  // VARIANTS / SERIAL TRACKING
+  // ===================================================
 
   hasVariants: booleanValue.default(false),
 
   trackSerial: booleanValue.default(false),
+
+  // ===================================================
+  // STATUS / DISPLAY
+  // ===================================================
 
   isFeatured: booleanValue.default(false),
 
@@ -211,39 +221,73 @@ const productFields = {
 // =====================================================
 // CREATE PRODUCT
 // =====================================================
-// Required: category, brand, sku, salePrice
-// Optional: business, businessType, tenantOwner (token or Super Admin)
+//
+// REQUIRED:
+// - category
+// - brand
+// - name
+//
+// OPTIONAL:
+// - model
+// - barcode
+// - barcodeType
+// - shortDescription
+// - description
+// - productType
+// - unit
+// - hasVariants
+// - trackSerial
+// - isFeatured
+// - isActive
+// - tenantOwner
+// - business
+// - businessType
+//
+// BACKEND GENERATED:
+// - sku
+// - slug
+//
+// NOT PART OF PRODUCT:
+// - purchasePrice
+// - salePrice
+// - discount
+// - tax
 // =====================================================
 
 export const createProductSchema = Joi.object({
+  // Tenant context
   tenantOwner: productFields.tenantOwner,
   business: productFields.business,
   businessType: productFields.businessType,
 
+  // Required
   category: productFields.category.required(),
+
   brand: productFields.brand.required(),
+
+  name: productFields.name.required(),
+
+  // Optional
   model: productFields.model,
 
-  name: productFields.name,
-  slug: productFields.slug,
-  sku: productFields.sku.required(),
   barcode: productFields.barcode,
+
   barcodeType: productFields.barcodeType,
 
   shortDescription: productFields.shortDescription,
+
   description: productFields.description,
 
   productType: productFields.productType,
+
   unit: productFields.unit,
 
-  purchasePrice: productFields.purchasePrice,
-  salePrice: productFields.salePrice.required(),
-  discount: productFields.discount,
-  tax: productFields.tax,
-
   hasVariants: productFields.hasVariants,
+
   trackSerial: productFields.trackSerial,
+
   isFeatured: productFields.isFeatured,
+
   isActive: productFields.isActive,
 })
   .unknown(false);
@@ -251,52 +295,81 @@ export const createProductSchema = Joi.object({
 // =====================================================
 // UPDATE PRODUCT
 // =====================================================
-// All fields optional; at least one required
-// removeImages: string | string[] | JSON string (multipart)
+//
+// All editable Product fields are optional.
+// At least one field is required.
+//
+// SKU and slug cannot be updated from frontend.
+// They remain backend-controlled.
+//
+// Financial fields are NOT included here because they
+// belong to ProductInventory.
+//
+// removeImages:
+// - string
+// - string[]
+// - multipart value
 // =====================================================
 
 export const updateProductSchema = Joi.object({
+  // Tenant context
   tenantOwner: productFields.tenantOwner,
+
   business: productFields.business,
+
   businessType: productFields.businessType,
 
+  // Product relations
   category: productFields.category.optional(),
+
   brand: productFields.brand.optional(),
+
   model: productFields.model,
 
-  name: productFields.name,
-  slug: productFields.slug,
-  sku: productFields.sku.optional(),
+  // Basic information
+  name: productFields.name.optional(),
+
+  // Barcode
   barcode: productFields.barcode,
+
   barcodeType: productFields.barcodeType.optional(),
 
+  // Description
   shortDescription: productFields.shortDescription,
+
   description: productFields.description,
 
+  // Product settings
   productType: productFields.productType.optional(),
+
   unit: productFields.unit.optional(),
 
-  purchasePrice: productFields.purchasePrice.optional(),
-  salePrice: productFields.salePrice.optional(),
-  discount: productFields.discount.optional(),
-  tax: productFields.tax.optional(),
-
   hasVariants: productFields.hasVariants.optional(),
+
   trackSerial: productFields.trackSerial.optional(),
+
+  // Status / display
   isFeatured: productFields.isFeatured.optional(),
+
   isActive: productFields.isActive.optional(),
 
-  // Cloudinary publicIds to remove (controller accepts string or array)
+  // ===================================================
+  // CLOUDINARY IMAGES
+  // ===================================================
+
   removeImages: Joi.alternatives()
     .try(
       Joi.array().items(Joi.string().trim()),
+
       Joi.string().trim(),
+
       Joi.any()
     )
     .optional(),
 })
   .min(1)
   .messages({
-    "object.min": "At least one field is required to update the product",
+    "object.min":
+      "At least one field is required to update the product",
   })
   .unknown(false);

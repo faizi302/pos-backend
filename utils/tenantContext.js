@@ -1,3 +1,4 @@
+
 import mongoose from "mongoose";
 
 import User from "../models/User.js";
@@ -24,9 +25,8 @@ const getRoleSlug = async (user) => {
 
     // Role is ObjectId
     if (user.role) {
-        const role = await Role.findById(
-            user.role
-        ).select("slug");
+        const role = await Role.findById(user.role)
+            .select("slug");
 
         return role?.slug?.toLowerCase() || null;
     }
@@ -64,12 +64,6 @@ export const getTenantContext = async (req) => {
 
     // -------------------------------------------------
     // GET CURRENT USER
-    // -------------------------------------------------
-    //
-    // We load the user from DB instead of relying
-    // completely on req.user because protect middleware
-    // may only contain the basic authenticated user.
-    //
     // -------------------------------------------------
 
     const currentUser =
@@ -109,7 +103,6 @@ export const getTenantContext = async (req) => {
         return {
             role: "super-admin",
 
-            // Super Admin is not a tenant
             tenantOwner: null,
 
             business: null,
@@ -128,7 +121,6 @@ export const getTenantContext = async (req) => {
         return {
             role: "admin",
 
-            // Admin owns his complete tenant
             tenantOwner: currentUser._id,
 
             business:
@@ -177,7 +169,7 @@ export const getTenantContext = async (req) => {
         }
 
         // -------------------------------------------------
-        // VERIFY CREATED BY USER IS ADMIN
+        // VERIFY ADMIN ROLE
         // -------------------------------------------------
 
         const adminRoleSlug =
@@ -206,12 +198,11 @@ export const getTenantContext = async (req) => {
         return {
             role: "manager",
 
-            // IMPORTANT:
-            // Manager uses Admin's ID as tenantOwner
+            // Manager uses Admin ID
+            // as tenant owner
             tenantOwner: admin._id,
 
-            // Manager inherits business context
-            // from Admin
+            // Manager inherits Admin business
             business:
                 admin.business || null,
 
@@ -237,15 +228,16 @@ export const getTenantContext = async (req) => {
 // BUILD TENANT QUERY
 // =====================================================
 //
-// Use this in tenant-owned controllers.
+// Main tenant isolation.
 //
-// Example:
+// Super Admin:
+// → {}
 //
-// const tenant = await getTenantContext(req);
+// Admin:
+// → { tenantOwner: Admin._id }
 //
-// const customers = await Customer.find({
-//     ...buildTenantQuery(tenant),
-// });
+// Manager:
+// → { tenantOwner: Admin._id }
 //
 // =====================================================
 
@@ -254,11 +246,6 @@ export const buildTenantQuery = (
 ) => {
     // -------------------------------------------------
     // SUPER ADMIN
-    // -------------------------------------------------
-    //
-    // Super Admin can see global/all tenant data
-    // when the controller allows it.
-    //
     // -------------------------------------------------
 
     if (tenantContext.isSuperAdmin) {
@@ -286,11 +273,24 @@ export const buildTenantQuery = (
 // BUILD TENANT + BUSINESS QUERY
 // =====================================================
 //
-// Use this only when you specifically need
-// tenantOwner + business + businessType.
+// Used for:
 //
-// Normal tenant isolation should primarily use
-// tenantOwner.
+// Business
+// BusinessType
+// Brand
+// Model
+// Product
+// ProductInventory
+//
+// For Admin / Manager:
+//
+// tenantOwner
+// + business
+// + businessType
+//
+// Super Admin:
+//
+// no tenant restriction
 //
 // =====================================================
 
@@ -300,20 +300,292 @@ export const buildTenantBusinessQuery = (
     const query =
         buildTenantQuery(tenantContext);
 
-    // Super Admin has no fixed business context
+    // Super Admin
     if (tenantContext.isSuperAdmin) {
         return query;
     }
+
+    // -------------------------------------------------
+    // BUSINESS
+    // -------------------------------------------------
 
     if (tenantContext.business) {
         query.business =
             tenantContext.business;
     }
 
+    // -------------------------------------------------
+    // BUSINESS TYPE
+    // -------------------------------------------------
+
     if (tenantContext.businessType) {
         query.businessType =
             tenantContext.businessType;
     }
+
+    return query;
+};
+
+
+// =====================================================
+// BUSINESS QUERY
+// =====================================================
+//
+// Business documents:
+//
+// {
+//     tenantOwner,
+//     ...
+// }
+//
+// =====================================================
+
+export const buildBusinessQuery = (
+    tenantContext
+) => {
+    return buildTenantQuery(
+        tenantContext
+    );
+};
+
+
+// =====================================================
+// BUSINESS TYPE QUERY
+// =====================================================
+//
+// BusinessType documents:
+//
+// {
+//     tenantOwner,
+//     business,
+//     ...
+// }
+//
+// =====================================================
+
+export const buildBusinessTypeQuery = (
+    tenantContext
+) => {
+    return buildTenantBusinessQuery(
+        tenantContext
+    );
+};
+
+
+// =====================================================
+// BRAND QUERY
+// =====================================================
+//
+// Brand documents:
+//
+// {
+//     tenantOwner,
+//     business,
+//     businessType,
+//     ...
+// }
+//
+// =====================================================
+
+export const buildBrandQuery = (
+    tenantContext
+) => {
+    return buildTenantBusinessQuery(
+        tenantContext
+    );
+};
+
+
+// =====================================================
+// MODEL QUERY
+// =====================================================
+//
+// Model documents:
+//
+// {
+//     tenantOwner,
+//     business,
+//     businessType,
+//     brand,
+//     ...
+// }
+//
+// =====================================================
+
+export const buildModelQuery = (
+    tenantContext
+) => {
+    return buildTenantBusinessQuery(
+        tenantContext
+    );
+};
+
+
+// =====================================================
+// PRODUCT QUERY
+// =====================================================
+//
+// Product documents:
+//
+// {
+//     tenantOwner,
+//     business,
+//     businessType,
+//     category,
+//     brand,
+//     model,
+//     ...
+// }
+//
+// =====================================================
+
+export const buildProductQuery = (
+    tenantContext
+) => {
+    return buildTenantBusinessQuery(
+        tenantContext
+    );
+};
+
+
+// =====================================================
+// PRODUCT INVENTORY QUERY
+// =====================================================
+//
+// ProductInventory documents:
+//
+// {
+//     tenantOwner,
+//     business,
+//     businessType,
+//     product,
+//     ...
+// }
+//
+// =====================================================
+
+export const buildProductInventoryQuery = (
+    tenantContext
+) => {
+    return buildTenantBusinessQuery(
+        tenantContext
+    );
+};
+
+
+// =====================================================
+// ADD PRODUCT FILTER
+// =====================================================
+//
+// Use when you already have a tenant query
+// and need to restrict it to one product.
+//
+// Example:
+//
+// const query = buildProductInventoryQuery(tenant);
+//
+// addProductFilter(query, productId);
+//
+// =====================================================
+
+export const addProductFilter = (
+    query,
+    productId
+) => {
+    if (!isValidObjectId(productId)) {
+        throw new Error(
+            "Invalid product ID"
+        );
+    }
+
+    query.product = productId;
+
+    return query;
+};
+
+
+// =====================================================
+// ADD BUSINESS FILTER
+// =====================================================
+//
+// Useful mainly for Super Admin.
+//
+// Admin / Manager already receive their
+// business through tenant context.
+//
+// =====================================================
+
+export const addBusinessFilter = (
+    query,
+    businessId
+) => {
+    if (!isValidObjectId(businessId)) {
+        throw new Error(
+            "Invalid business ID"
+        );
+    }
+
+    query.business = businessId;
+
+    return query;
+};
+
+
+// =====================================================
+// ADD BUSINESS TYPE FILTER
+// =====================================================
+
+export const addBusinessTypeFilter = (
+    query,
+    businessTypeId
+) => {
+    if (!isValidObjectId(businessTypeId)) {
+        throw new Error(
+            "Invalid business type ID"
+        );
+    }
+
+    query.businessType = businessTypeId;
+
+    return query;
+};
+
+
+// =====================================================
+// ADD BRAND FILTER
+// =====================================================
+
+export const addBrandFilter = (
+    query,
+    brandId
+) => {
+    if (!isValidObjectId(brandId)) {
+        throw new Error(
+            "Invalid brand ID"
+        );
+    }
+
+    query.brand = brandId;
+
+    return query;
+};
+
+
+// =====================================================
+// ADD MODEL FILTER
+// =====================================================
+
+export const addModelFilter = (
+    query,
+    modelId
+) => {
+    if (!isValidObjectId(modelId)) {
+        throw new Error(
+            "Invalid model ID"
+        );
+    }
+
+    query.model = modelId;
 
     return query;
 };
@@ -329,10 +601,14 @@ export const isValidObjectId = (id) => {
 
 
 // =====================================================
-// GET TENANT OWNER ID
+// GET TENANT OWNER
 // =====================================================
 //
-// Small helper when you only need the owner ID.
+// Returns:
+//
+// Admin    → Admin._id
+// Manager  → Admin._id
+// SuperAdmin → null
 //
 // =====================================================
 
@@ -341,4 +617,19 @@ export const getTenantOwner = async (req) => {
         await getTenantContext(req);
 
     return tenant.tenantOwner;
+};
+
+
+// =====================================================
+// GET FULL TENANT CONTEXT
+// =====================================================
+//
+// Convenience helper.
+//
+// =====================================================
+
+export const getTenantBusinessContext = async (
+    req
+) => {
+    return await getTenantContext(req);
 };

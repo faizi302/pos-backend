@@ -1,15 +1,15 @@
 import express from "express";
 
 import {
-  createProductInventory,
-  getAllProductInventory,
-  getProductInventory,
-  getProductInventoryById,
-  updateProductInventory,
-  updateProductStock,
-  deleteProductInventory,
-  restoreProductInventory,
-} from "../controllers/productInventoryController.js";
+  createInventoryUnit,
+  getAllInventoryUnits,
+  getInventoryUnitsByProductInventory,
+  getInventoryUnitById,
+  getInventoryUnitByImei,
+  updateInventoryUnit,
+  deleteInventoryUnit,
+  restoreInventoryUnit,
+} from "../controllers/inventoryUnitController.js";
 
 import { protect } from "../middlewares/auth.middleware.js";
 import { authorize } from "../middlewares/permission.middleware.js";
@@ -17,91 +17,92 @@ import { authorize } from "../middlewares/permission.middleware.js";
 const router = express.Router();
 
 // =====================================================
-// CREATE INVENTORY
+// CREATE INVENTORY UNIT
 // POST /
 // =====================================================
 router.post(
   "/",
   protect,
   authorize("inventory.adjust"),
-  createProductInventory
+  createInventoryUnit
 );
 
 // =====================================================
-// GET ALL INVENTORY
+// GET ALL INVENTORY UNITS
 // GET /
 // =====================================================
 router.get(
   "/",
   protect,
   authorize("inventory.read"),
-  getAllProductInventory
+  getAllInventoryUnits
 );
 
 // =====================================================
-// GET INVENTORY BY PRODUCT
-// GET /product/:productId
+// GET UNITS BY PRODUCT INVENTORY
+// GET /product-inventory/:productInventoryId
 // =====================================================
 router.get(
-  "/product/:productId",
+  "/product-inventory/:productInventoryId",
   protect,
   authorize("inventory.read"),
-  getProductInventory
+  getInventoryUnitsByProductInventory
 );
 
 // =====================================================
-// GET INVENTORY BY ID
+// SCAN / GET BY IMEI
+// GET /imei/:imei
+// Must be before /:id
+// =====================================================
+router.get(
+  "/imei/:imei",
+  protect,
+  authorize("inventory.read"),
+  getInventoryUnitByImei
+);
+
+// =====================================================
+// GET INVENTORY UNIT BY ID
 // GET /:id
 // =====================================================
 router.get(
   "/:id",
   protect,
   authorize("inventory.read"),
-  getProductInventoryById
+  getInventoryUnitById
 );
 
 // =====================================================
-// UPDATE INVENTORY
+// UPDATE INVENTORY UNIT
 // PATCH /:id
 // =====================================================
 router.patch(
   "/:id",
   protect,
   authorize("inventory.adjust"),
-  updateProductInventory
+  updateInventoryUnit
 );
 
 // =====================================================
-// UPDATE STOCK
-// PATCH /:id/stock
-// =====================================================
-router.patch(
-  "/:id/stock",
-  protect,
-  authorize("inventory.adjust"),
-  updateProductStock
-);
-
-// =====================================================
-// DELETE INVENTORY (soft)
+// DELETE INVENTORY UNIT (soft)
 // DELETE /:id
 // =====================================================
 router.delete(
   "/:id",
   protect,
   authorize("inventory.adjust"),
-  deleteProductInventory
+  deleteInventoryUnit
 );
 
 // =====================================================
-// RESTORE INVENTORY
+// RESTORE INVENTORY UNIT
 // PATCH /:id/restore
 // =====================================================
 router.patch(
   "/:id/restore",
   protect,
   authorize("inventory.adjust"),
-  restoreProductInventory
+  restoreInventoryUnit
 );
 
 export default router;

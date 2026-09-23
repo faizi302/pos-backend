@@ -20,13 +20,11 @@ import {
 
 const router = express.Router();
 
-// ======================================================
+// =====================================================
 // CREATE PRODUCT
 // POST /
-// - images: multipart field "images" (max 10)
-// - validate runs AFTER upload so FormData body fields exist
-// ======================================================
-
+// FormData: images (max 10)
+// =====================================================
 router.post(
   "/",
   protect,
@@ -36,27 +34,33 @@ router.post(
   createProduct
 );
 
-// ======================================================
+// =====================================================
 // GET ALL PRODUCTS
-// GET /?page&limit&search&category&brand&model&productType&isActive&trackSerial&stockStatus
-// ======================================================
+// GET /
+// =====================================================
+router.get(
+  "/",
+  protect,
+  authorize("products.read"),
+  getAllProducts
+);
 
-router.get("/", protect, authorize("products.read"), getAllProducts);
-
-// ======================================================
+// =====================================================
 // GET PRODUCT BY ID
 // GET /:id
-// ======================================================
+// =====================================================
+router.get(
+  "/:id",
+  protect,
+  authorize("products.read"),
+  getProductById
+);
 
-router.get("/:id", protect, authorize("products.read"), getProductById);
-
-// ======================================================
+// =====================================================
 // UPDATE PRODUCT
 // PATCH /:id
-// - images: multipart field "images" (max 10)
-// - removeImages: optional (string | JSON array of publicIds)
-// ======================================================
-
+// FormData: images (max 10), removeImages (optional)
+// =====================================================
 router.patch(
   "/:id",
   protect,
@@ -66,22 +70,15 @@ router.patch(
   updateProduct
 );
 
-// ======================================================
-// DELETE PRODUCT (soft — isActive: false)
+// =====================================================
+// DELETE PRODUCT (permanent)
 // DELETE /:id
-// ======================================================
-
+// =====================================================
 router.delete(
   "/:id",
   protect,
   authorize("products.delete"),
   deleteProduct
 );
-
-// ======================================================
-// RESTORE PRODUCT
-// PATCH /:id/restore
-// ======================================================
-
 
 export default router;

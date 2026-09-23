@@ -30,9 +30,6 @@ const productInventorySchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // VARIANT FIELDS (color / size)
-    // ==========================================
     color: {
       type: String,
       trim: true,
@@ -45,35 +42,6 @@ const productInventorySchema = new mongoose.Schema(
       default: null,
     },
 
-    // ==========================================
-    // SERIAL / IMEI SUPPORT (for Mobiles etc.)
-    // ==========================================
-    imei: {
-      type: String,
-      trim: true,
-      uppercase: true,
-      default: null,
-      index: true,
-    },
-
-    // Per-unit barcode (different from Product.barcode)
-    unitBarcode: {
-      type: String,
-      trim: true,
-      uppercase: true,
-      default: null,
-      index: true,
-    },
-
-    serialNumber: {
-      type: String,
-      trim: true,
-      default: null,
-    },
-
-    // ==========================================
-    // STOCK & PRICING
-    // ==========================================
     quantity: {
       type: Number,
       min: 0,
@@ -141,12 +109,6 @@ const productInventorySchema = new mongoose.Schema(
   }
 );
 
-// ==================================================
-// UNIQUE INDEXES
-// ==================================================
-
-// 1. Non-serial products (normal color/size variants)
-//    Only applies when imei is null
 productInventorySchema.index(
   {
     tenantOwner: 1,
@@ -158,45 +120,10 @@ productInventorySchema.index(
     unique: true,
     partialFilterExpression: {
       isActive: true,
-      imei: null,
     },
     name: "tenantOwner_1_product_1_color_1_size_1",
   }
 );
-
-// 2. IMEI unique inside one tenant (only when present)
-productInventorySchema.index(
-  {
-    tenantOwner: 1,
-    imei: 1,
-  },
-  {
-    unique: true,
-    partialFilterExpression: {
-      imei: { $type: "string" },
-    },
-    name: "tenantOwner_1_imei_1",
-  }
-);
-
-// 3. Unit barcode unique inside one tenant (only when present)
-productInventorySchema.index(
-  {
-    tenantOwner: 1,
-    unitBarcode: 1,
-  },
-  {
-    unique: true,
-    partialFilterExpression: {
-      unitBarcode: { $type: "string" },
-    },
-    name: "tenantOwner_1_unitBarcode_1",
-  }
-);
-
-// ==================================================
-// QUERY INDEXES
-// ==================================================
 
 productInventorySchema.index({
   tenantOwner: 1,

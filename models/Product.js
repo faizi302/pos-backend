@@ -2,9 +2,6 @@ import mongoose from "mongoose";
 
 const productSchema = new mongoose.Schema(
   {
-    // ==========================================
-    // TENANT / BUSINESS
-    // ==========================================
     tenantOwner: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
@@ -26,9 +23,6 @@ const productSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // PRODUCT RELATIONS
-    // ==========================================
     category: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Category",
@@ -50,9 +44,6 @@ const productSchema = new mongoose.Schema(
       index: true,
     },
 
-    // ==========================================
-    // BASIC INFORMATION
-    // ==========================================
     name: {
       type: String,
       required: true,
@@ -64,6 +55,7 @@ const productSchema = new mongoose.Schema(
       type: String,
       trim: true,
       lowercase: true,
+      default: null,
     },
 
     sku: {
@@ -140,14 +132,6 @@ const productSchema = new mongoose.Schema(
       default: false,
     },
 
-    // ==========================================
-    // SERIAL / IMEI TRACKING
-    // ==========================================
-    //
-    // true  → this product uses individual units with IMEI
-    //         (typical for Mobiles)
-    // false → normal quantity-based inventory
-    //
     trackSerial: {
       type: Boolean,
       default: false,
@@ -180,31 +164,6 @@ const productSchema = new mongoose.Schema(
       default: "piece",
     },
 
-    purchasePrice: {
-      type: Number,
-      min: 0,
-      default: 0,
-    },
-
-    salePrice: {
-      type: Number,
-      required: true,
-      min: 0,
-    },
-
-    discount: {
-      type: Number,
-      min: 0,
-      max: 100,
-      default: 0,
-    },
-
-    tax: {
-      type: Number,
-      min: 0,
-      default: 0,
-    },
-
     isFeatured: {
       type: Boolean,
       default: false,
@@ -234,43 +193,114 @@ const productSchema = new mongoose.Schema(
   }
 );
 
-// ==================================================
-// INDEXES
-// ==================================================
-
 productSchema.index(
-  { tenantOwner: 1, sku: 1 },
-  { unique: true, name: "tenantOwner_1_sku_1" }
+  {
+    tenantOwner: 1,
+    sku: 1,
+  },
+  {
+    unique: true,
+    name: "tenantOwner_1_sku_1",
+  }
 );
 
 productSchema.index(
-  { tenantOwner: 1, barcode: 1 },
+  {
+    tenantOwner: 1,
+    slug: 1,
+  },
   {
     unique: true,
-    name: "tenantOwner_1_barcode_1",
+    name: "tenantOwner_1_slug_1",
     partialFilterExpression: {
-      barcode: { $type: "string" },
+      slug: {
+        $type: "string",
+        $ne: "",
+      },
     },
   }
 );
 
-productSchema.index({ tenantOwner: 1, name: 1 });
-productSchema.index({ tenantOwner: 1, business: 1 });
-productSchema.index({ tenantOwner: 1, businessType: 1 });
-productSchema.index({ tenantOwner: 1, category: 1 });
-productSchema.index({ tenantOwner: 1, brand: 1 });
-productSchema.index({ tenantOwner: 1, model: 1 });
-productSchema.index({ tenantOwner: 1, createdBy: 1 });
-productSchema.index({ tenantOwner: 1, isActive: 1 });
+productSchema.index(
+  {
+    tenantOwner: 1,
+    barcode: 1,
+  },
+  {
+    unique: true,
+    name: "tenantOwner_1_barcode_1",
+    partialFilterExpression: {
+      barcode: {
+        $type: "string",
+        $ne: "",
+      },
+    },
+  }
+);
+
+productSchema.index({
+  tenantOwner: 1,
+  name: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  business: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  businessType: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  category: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  brand: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  model: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  createdBy: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  isActive: 1,
+});
+
 productSchema.index({
   tenantOwner: 1,
   business: 1,
   businessType: 1,
   isActive: 1,
 });
-productSchema.index({ tenantOwner: 1, category: 1, brand: 1 });
-productSchema.index({ tenantOwner: 1, brand: 1, model: 1 });
-productSchema.index({ tenantOwner: 1, trackSerial: 1 });
+
+productSchema.index({
+  tenantOwner: 1,
+  category: 1,
+  brand: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  brand: 1,
+  model: 1,
+});
+
+productSchema.index({
+  tenantOwner: 1,
+  trackSerial: 1,
+});
 
 const Product = mongoose.model("Product", productSchema);
 
