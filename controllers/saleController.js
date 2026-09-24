@@ -459,8 +459,6 @@ export const createSale = async (
       paidAmount = 0,
 
       paymentMethod = "cash",
-      referenceNumber = "",
-      notes = "",
     } = req.body;
 
     // --------------------------------------------------
@@ -698,15 +696,7 @@ export const createSale = async (
 
         paymentMethod,
 
-        referenceNumber:
-          referenceNumber
-            ?.toString()
-            .trim() || "",
-
-        notes:
-          notes
-            ?.toString()
-            .trim() || "",
+      
 
         createdBy:
           req.user._id,
@@ -1439,8 +1429,6 @@ export const updateSale = async (
       "totalAmount",
       "paidAmount",
       "paymentMethod",
-      "referenceNumber",
-      "notes",
     ];
 
     for (

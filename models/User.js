@@ -107,7 +107,7 @@ const userSchema = new mongoose.Schema(
         business: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "Business",
-            required: [true, "User business is required"],
+            // required: [true, "User business is required"],
             default: null,
             index: true,
         },
@@ -115,7 +115,7 @@ const userSchema = new mongoose.Schema(
         businessType: {
             type: mongoose.Schema.Types.ObjectId,
             ref: "BusinessType",
-             required: [true, "BusinessType role is required"],
+            //  required: [true, "BusinessType role is required"],
             default: null,
             index: true,
         },

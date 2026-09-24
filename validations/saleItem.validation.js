@@ -23,43 +23,41 @@ export const createSaleItemSchema = Joi.object({
     "string.hex": "Invalid product inventory ID.",
   }),
 
+  // ========== NEW (allow these fields) ==========
+  inventoryUnit: objectId.optional().allow(null),   // optional
+  imei: Joi.string().trim().uppercase().max(20).optional().allow(null, ""),
+  // ==============================================
+
   quantity: Joi.number().positive().required().messages({
     "any.required": "Quantity is required.",
     "number.positive": "Quantity must be greater than 0.",
   }),
 
   salePrice: Joi.number().min(0).optional(),
-
   discount: Joi.number().min(0).optional(),
-
   tax: Joi.number().min(0).optional(),
 
   lineSubtotal: Joi.number().min(0).optional(),
-
   lineTotal: Joi.number().min(0).optional(),
-
   returnedQuantity: Joi.number().min(0).optional(),
 }).unknown(false);
 
 export const updateSaleItemSchema = Joi.object({
   sale: objectId.optional(),
-
   product: objectId.optional(),
-
   productInventory: objectId.optional(),
 
+  // ========== NEW ==========
+  inventoryUnit: objectId.optional().allow(null),
+  imei: Joi.string().trim().uppercase().max(20).optional().allow(null, ""),
+  // =========================
+
   quantity: Joi.number().positive().optional(),
-
   salePrice: Joi.number().min(0).optional(),
-
   discount: Joi.number().min(0).optional(),
-
   tax: Joi.number().min(0).optional(),
-
   lineSubtotal: Joi.number().min(0).optional(),
-
   lineTotal: Joi.number().min(0).optional(),
-
   returnedQuantity: Joi.number().min(0).optional(),
 })
   .min(1)

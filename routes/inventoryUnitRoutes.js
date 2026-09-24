@@ -23,7 +23,7 @@ const router = express.Router();
 router.post(
   "/",
   protect,
-  authorize("inventory.adjust"),
+  authorize("units.create"),
   createInventoryUnit
 );
 
@@ -34,7 +34,7 @@ router.post(
 router.get(
   "/",
   protect,
-  authorize("inventory.read"),
+  authorize("units.read"),
   getAllInventoryUnits
 );
 
@@ -45,7 +45,7 @@ router.get(
 router.get(
   "/product-inventory/:productInventoryId",
   protect,
-  authorize("inventory.read"),
+  authorize("units.read"),
   getInventoryUnitsByProductInventory
 );
 
@@ -57,7 +57,7 @@ router.get(
 router.get(
   "/imei/:imei",
   protect,
-  authorize("inventory.read"),
+  authorize("units.read"),
   getInventoryUnitByImei
 );
 
@@ -68,7 +68,7 @@ router.get(
 router.get(
   "/:id",
   protect,
-  authorize("inventory.read"),
+  authorize("units.read"),
   getInventoryUnitById
 );
 
@@ -79,7 +79,7 @@ router.get(
 router.patch(
   "/:id",
   protect,
-  authorize("inventory.adjust"),
+  authorize("units.update"),
   updateInventoryUnit
 );
 
@@ -90,7 +90,7 @@ router.patch(
 router.delete(
   "/:id",
   protect,
-  authorize("inventory.adjust"),
+  authorize("units.delete"),
   deleteInventoryUnit
 );
 
@@ -101,7 +101,7 @@ router.delete(
 router.patch(
   "/:id/restore",
   protect,
-  authorize("inventory.adjust"),
+  authorize("units.update"),
   restoreInventoryUnit
 );
 

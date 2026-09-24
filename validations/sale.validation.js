@@ -16,41 +16,29 @@ const objectId = Joi.string()
 
 const createSaleSchema = Joi.object({
   // ----------------------------------------------------
-  // BUSINESS
+  // BUSINESS (Super Admin only)
   // ----------------------------------------------------
-  //
-  // Optional because:
-  // - Super Admin may provide business
-  // - Admin / Manager context should be resolved
-  //   by the backend
-  //
   business: objectId.optional(),
 
   // ----------------------------------------------------
   // CUSTOMER
   // ----------------------------------------------------
-
-  customer: objectId
-    .allow(null)
-    .optional(),
+  customer: objectId.allow(null).optional(),
 
   // ----------------------------------------------------
   // SALE INFORMATION
   // ----------------------------------------------------
-
   saleNumber: Joi.string()
     .trim()
     .uppercase()
     .max(50)
     .optional(),
 
-  saleDate: Joi.date()
-    .optional(),
+  saleDate: Joi.date().optional(),
 
   // ----------------------------------------------------
   // SALE STATUS
   // ----------------------------------------------------
-
   status: Joi.string()
     .valid(
       "draft",
@@ -65,98 +53,31 @@ const createSaleSchema = Joi.object({
   // ----------------------------------------------------
   // PAYMENT STATUS
   // ----------------------------------------------------
-
   paymentStatus: Joi.string()
-    .valid(
-      "unpaid",
-      "partially_paid",
-      "paid",
-      "refunded"
-    )
+    .valid("unpaid", "partially_paid", "paid", "refunded")
     .optional(),
 
   // ----------------------------------------------------
   // AMOUNTS
   // ----------------------------------------------------
-
-  subtotal: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional()
-    .default(0),
-
-  discount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional()
-    .default(0),
-
-  tax: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional()
-    .default(0),
-
-  shippingCost: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional()
-    .default(0),
-
-  otherCharges: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional()
-    .default(0),
-
-  totalAmount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  paidAmount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional()
-    .default(0),
-
-  dueAmount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
+  subtotal: Joi.number().min(0).precision(2).optional().default(0),
+  discount: Joi.number().min(0).precision(2).optional().default(0),
+  tax: Joi.number().min(0).precision(2).optional().default(0),
+  shippingCost: Joi.number().min(0).precision(2).optional().default(0),
+  otherCharges: Joi.number().min(0).precision(2).optional().default(0),
+  totalAmount: Joi.number().min(0).precision(2).optional(),
+  paidAmount: Joi.number().min(0).precision(2).optional().default(0),
+  dueAmount: Joi.number().min(0).precision(2).optional(),
 
   // ----------------------------------------------------
   // PAYMENT
   // ----------------------------------------------------
-
   paymentMethod: Joi.string()
-    .valid(
-      "cash",
-      "bank",
-      "card",
-      "cheque",
-      "online",
-      "credit",
-      "other"
-    )
+    .valid("cash", "bank", "card", "cheque", "online", "credit", "other")
     .optional()
     .default("cash"),
 
-  referenceNumber: Joi.string()
-    .trim()
-    .max(100)
-    .allow("")
-    .optional(),
-
-  // ----------------------------------------------------
-  // NOTES
-  // ----------------------------------------------------
-
-  notes: Joi.string()
-    .trim()
-    .max(1000)
-    .allow("")
-    .optional(),
+  // notes + referenceNumber completely removed
 })
   .unknown(false);
 
@@ -165,26 +86,9 @@ const createSaleSchema = Joi.object({
 // ======================================================
 
 const updateSaleSchema = Joi.object({
-  // ----------------------------------------------------
-  // BUSINESS
-  // ----------------------------------------------------
-  //
-  // Backend should verify/resolve this against the
-  // authenticated user's tenant context.
-  //
   business: objectId.optional(),
 
-  // ----------------------------------------------------
-  // CUSTOMER
-  // ----------------------------------------------------
-
-  customer: objectId
-    .allow(null)
-    .optional(),
-
-  // ----------------------------------------------------
-  // SALE INFORMATION
-  // ----------------------------------------------------
+  customer: objectId.allow(null).optional(),
 
   saleNumber: Joi.string()
     .trim()
@@ -192,12 +96,7 @@ const updateSaleSchema = Joi.object({
     .max(50)
     .optional(),
 
-  saleDate: Joi.date()
-    .optional(),
-
-  // ----------------------------------------------------
-  // SALE STATUS
-  // ----------------------------------------------------
+  saleDate: Joi.date().optional(),
 
   status: Joi.string()
     .valid(
@@ -209,94 +108,24 @@ const updateSaleSchema = Joi.object({
     )
     .optional(),
 
-  // ----------------------------------------------------
-  // PAYMENT STATUS
-  // ----------------------------------------------------
-
   paymentStatus: Joi.string()
-    .valid(
-      "unpaid",
-      "partially_paid",
-      "paid",
-      "refunded"
-    )
+    .valid("unpaid", "partially_paid", "paid", "refunded")
     .optional(),
 
-  // ----------------------------------------------------
-  // AMOUNTS
-  // ----------------------------------------------------
-
-  subtotal: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  discount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  tax: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  shippingCost: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  otherCharges: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  totalAmount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  paidAmount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  dueAmount: Joi.number()
-    .min(0)
-    .precision(2)
-    .optional(),
-
-  // ----------------------------------------------------
-  // PAYMENT
-  // ----------------------------------------------------
+  subtotal: Joi.number().min(0).precision(2).optional(),
+  discount: Joi.number().min(0).precision(2).optional(),
+  tax: Joi.number().min(0).precision(2).optional(),
+  shippingCost: Joi.number().min(0).precision(2).optional(),
+  otherCharges: Joi.number().min(0).precision(2).optional(),
+  totalAmount: Joi.number().min(0).precision(2).optional(),
+  paidAmount: Joi.number().min(0).precision(2).optional(),
+  dueAmount: Joi.number().min(0).precision(2).optional(),
 
   paymentMethod: Joi.string()
-    .valid(
-      "cash",
-      "bank",
-      "card",
-      "cheque",
-      "online",
-      "credit",
-      "other"
-    )
+    .valid("cash", "bank", "card", "cheque", "online", "credit", "other")
     .optional(),
 
-  referenceNumber: Joi.string()
-    .trim()
-    .max(100)
-    .allow("")
-    .optional(),
-
-  // ----------------------------------------------------
-  // NOTES
-  // ----------------------------------------------------
-
-  notes: Joi.string()
-    .trim()
-    .max(1000)
-    .allow("")
-    .optional(),
+  // notes + referenceNumber completely removed
 })
   .min(1)
   .unknown(false);

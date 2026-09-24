@@ -1,6 +1,7 @@
 import Product from "../models/Product.js";
 import ProductInventory from "../models/ProductInventory.js";
 import InventoryUnit from "../models/InventoryUnit.js";
+import ProductSequence from "../models/ProductSequence.js";
 
 import Business from "../models/Business.js";
 import BusinessType from "../models/BusinessType.js";
@@ -29,50 +30,25 @@ import {
 // ======================================================
 
 const parseBoolean = (value, defaultValue = false) => {
-  if (value === undefined || value === null || value === "") {
-    return defaultValue;
-  }
-
-  if (typeof value === "boolean") {
-    return value;
-  }
-
+  if (value === undefined || value === null || value === "") return defaultValue;
+  if (typeof value === "boolean") return value;
   return ["true", "1"].includes(String(value).toLowerCase());
 };
 
-// ======================================================
-// TITLE CASE
-// ======================================================
-
 const normalizeTitleCase = (value) => {
-  if (value === undefined || value === null) {
-    return "";
-  }
-
+  if (value === undefined || value === null) return "";
   return String(value)
     .trim()
     .replace(/\s+/g, " ")
     .toLowerCase()
-    .replace(/\b\w/g, (char) => char.toUpperCase());
+    .replace(/\b\w/g, (c) => c.toUpperCase());
 };
-
-// ======================================================
-// BARCODE
-// ======================================================
 
 const normalizeBarcode = (value) => {
-  if (value === undefined || value === null) {
-    return null;
-  }
-
+  if (value === undefined || value === null) return null;
   const barcode = String(value).trim();
-
   return barcode || null;
 };
-
-// ======================================================
-// SLUG
-// ======================================================
 
 const makeSlug = (value = "") =>
   String(value)
@@ -80,10 +56,6 @@ const makeSlug = (value = "") =>
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
-
-// ======================================================
-// POPULATE PRODUCT
-// ======================================================
 
 const populateProduct = (query) =>
   query
@@ -97,47 +69,31 @@ const populateProduct = (query) =>
     .populate("updatedBy", "name email");
 
 // ======================================================
-// RESOLVE TENANT
+// TENANT RESOLUTION
 // ======================================================
 
 const resolveTenant = async (req, requireOwner = true) => {
   const context = await getTenantContext(req);
 
-  // ====================================================
-  // SUPER ADMIN
-  // ====================================================
-
+  // Super Admin
   if (context.isSuperAdmin) {
     const requestedTenantOwner =
       req.body?.tenantOwner || req.query?.tenantOwner;
 
     if (requireOwner && !requestedTenantOwner) {
-      return {
-        error: "Tenant owner is required.",
-      };
+      return { error: "Tenant owner is required." };
     }
 
-    if (
-      requestedTenantOwner &&
-      !isValidObjectId(requestedTenantOwner)
-    ) {
-      return {
-        error: "Invalid tenant owner ID.",
-      };
+    if (requestedTenantOwner && !isValidObjectId(requestedTenantOwner)) {
+      return { error: "Invalid tenant owner ID." };
     }
 
     if (!requestedTenantOwner) {
       return {
         context,
         tenantOwner: null,
-        business:
-          req.body?.business ||
-          req.query?.business ||
-          null,
-        businessType:
-          req.body?.businessType ||
-          req.query?.businessType ||
-          null,
+        business: req.body?.business || req.query?.business || null,
+        businessType: req.body?.businessType || req.query?.businessType || null,
       };
     }
 
@@ -145,38 +101,13 @@ const resolveTenant = async (req, requireOwner = true) => {
       .select("_id role business businessType status")
       .populate("role", "slug");
 
-    if (!admin) {
-      return {
-        error: "Tenant owner not found.",
-      };
-    }
+    if (!admin) return { error: "Tenant owner not found." };
 
     const roleSlug = admin.role?.slug?.toLowerCase();
-
-    if (roleSlug !== "admin") {
-      return {
-        error: "Tenant owner must be an Admin.",
-      };
-    }
-
-    if (admin.status !== "active") {
-      return {
-        error: "Tenant owner account is not active.",
-      };
-    }
-
-    if (!admin.business) {
-      return {
-        error: "Tenant owner is not assigned to a business.",
-      };
-    }
-
-    if (!admin.businessType) {
-      return {
-        error:
-          "Tenant owner is not assigned to a business type.",
-      };
-    }
+    if (roleSlug !== "admin") return { error: "Tenant owner must be an Admin." };
+    if (admin.status !== "active") return { error: "Tenant owner account is not active." };
+    if (!admin.business) return { error: "Tenant owner is not assigned to a business." };
+    if (!admin.businessType) return { error: "Tenant owner is not assigned to a business type." };
 
     return {
       context,
@@ -186,21 +117,14 @@ const resolveTenant = async (req, requireOwner = true) => {
     };
   }
 
-  // ====================================================
-  // ADMIN / MANAGER
-  // ====================================================
-
+  // Admin / Manager
   if (!context.tenantOwner) {
-    return {
-      error:
-        "Your account is not associated with a tenant.",
-    };
+    return { error: "Your account is not associated with a tenant." };
   }
 
   if (!context.business || !context.businessType) {
     return {
-      error:
-        "Your account is not associated with a business and business type.",
+      error: "Your account is not associated with a business and business type.",
     };
   }
 
@@ -213,15 +137,12 @@ const resolveTenant = async (req, requireOwner = true) => {
 };
 
 // ======================================================
-// RELATION VALIDATORS
+// RELATION VALIDATORS (tenant-safe)
 // ======================================================
 
 const validateBusiness = (id) =>
   isValidObjectId(id)
-    ? Business.findOne({
-        _id: id,
-        isActive: true,
-      })
+    ? Business.findOne({ _id: id, isActive: true })
     : null;
 
 const validateBusinessType = (id, businessId) =>
@@ -233,40 +154,19 @@ const validateBusinessType = (id, businessId) =>
       })
     : null;
 
-const validateCategory = (
-  id,
-  tenantOwner,
-  businessId,
-  businessTypeId
-) =>
-  isValidObjectId(id) &&
-  tenantOwner &&
-  businessId &&
-  businessTypeId
+const validateCategory = (id, tenantOwner, businessId, businessTypeId) =>
+  isValidObjectId(id) && tenantOwner && businessId && businessTypeId
     ? Category.findOne({
         _id: id,
         tenantOwner,
         business: businessId,
         isActive: true,
-        $or: [
-          {
-            businessType: businessTypeId,
-          },
-          {
-            businessType: null,
-          },
-        ],
+        $or: [{ businessType: businessTypeId }, { businessType: null }],
       })
     : null;
 
-const validateBrand = (
-  id,
-  businessId,
-  businessTypeId
-) =>
-  isValidObjectId(id) &&
-  isValidObjectId(businessId) &&
-  isValidObjectId(businessTypeId)
+const validateBrand = (id, businessId, businessTypeId) =>
+  isValidObjectId(id) && isValidObjectId(businessId) && isValidObjectId(businessTypeId)
     ? Brand.findOne({
         _id: id,
         business: businessId,
@@ -275,28 +175,12 @@ const validateBrand = (
       })
     : null;
 
-const validateModel = async (
-  id,
-  businessId,
-  businessTypeId,
-  brandId
-) => {
-  if (!id) {
+const validateModel = async (id, businessId, businessTypeId, brandId) => {
+  if (!id) return null;
+  if (!isValidObjectId(id)) return false;
+  if (!isValidObjectId(businessId) || !isValidObjectId(businessTypeId) || !isValidObjectId(brandId)) {
     return null;
   }
-
-  if (!isValidObjectId(id)) {
-    return false;
-  }
-
-  if (
-    !isValidObjectId(businessId) ||
-    !isValidObjectId(businessTypeId) ||
-    !isValidObjectId(brandId)
-  ) {
-    return null;
-  }
-
   return Model.findOne({
     _id: id,
     business: businessId,
@@ -307,53 +191,22 @@ const validateModel = async (
 };
 
 // ======================================================
-// GENERATE UNIQUE SLUG
-// ======================================================
-//
-// Example:
-//
-// Samsung Galaxy S20
-// samsung-galaxy-s20
-//
-// If it already exists:
-//
-// samsung-galaxy-s20-2
-// samsung-galaxy-s20-3
-//
-// Uniqueness is tenant scoped.
+// SLUG GENERATION (tenant-scoped)
 // ======================================================
 
-const generateUniqueSlug = async (
-  name,
-  tenantOwner,
-  excludeProductId = null
-) => {
+const generateUniqueSlug = async (name, tenantOwner, excludeProductId = null) => {
   const baseSlug = makeSlug(name);
-
-  if (!baseSlug) {
-    return null;
-  }
+  if (!baseSlug) return null;
 
   let slug = baseSlug;
   let counter = 1;
 
   while (true) {
-    const query = {
-      tenantOwner,
-      slug,
-    };
-
-    if (excludeProductId) {
-      query._id = {
-        $ne: excludeProductId,
-      };
-    }
+    const query = { tenantOwner, slug };
+    if (excludeProductId) query._id = { $ne: excludeProductId };
 
     const exists = await Product.exists(query);
-
-    if (!exists) {
-      return slug;
-    }
+    if (!exists) return slug;
 
     counter += 1;
     slug = `${baseSlug}-${counter}`;
@@ -361,94 +214,53 @@ const generateUniqueSlug = async (
 };
 
 // ======================================================
-// GENERATE SKU
-// ======================================================
-//
-// SKU is generated automatically.
-//
-// Example:
-//
-// SAMSUNG-S20-000001
-// SAMSUNG-S20-000002
-//
-// Sequence is tenant scoped.
-//
-// Admin A:
-// SAMSUNG-S20-000001
-//
-// Admin B:
-// SAMSUNG-S20-000001
-//
-// Different tenants do not conflict.
+// SKU GENERATION (atomic, tenant-scoped, persistent)
 // ======================================================
 
-const generateSku = async (
-  tenantOwner,
-  brandName,
-  modelName,
-  productName
-) => {
-  const brandPart = makeSlug(brandName)
+const generateSku = async (tenantOwner, business, businessType, brandName, modelName, productName) => {
+  const brandPart = makeSlug(brandName || "PRODUCT")
     .replace(/-/g, "")
     .toUpperCase()
-    .slice(0, 20);
+    .slice(0, 20) || "PRODUCT";
 
-  const modelPart = makeSlug(
-    modelName || productName
-  )
+  const modelPart = makeSlug(modelName || productName || "ITEM")
     .replace(/-/g, "")
     .toUpperCase()
-    .slice(0, 30);
+    .slice(0, 30) || "ITEM";
 
-  const prefix = `${brandPart || "PRODUCT"}-${modelPart || "ITEM"}`;
+  const prefix = `${brandPart}-${modelPart}`;
 
-
+  // Atomic increment – safe under concurrency
+  const sequence = await ProductSequence.findOneAndUpdate(
+    { tenantOwner, business, businessType },
+    { $inc: { counter: 1 } },
+    { upsert: true, new: true }
+  );
 
   const number = String(sequence.counter).padStart(6, "0");
-
   return `${prefix}-${number}`;
 };
 
 // ======================================================
-// DUPLICATE ERROR
+// DUPLICATE KEY HANDLER
 // ======================================================
 
 const handleDuplicateError = (error, res) => {
-  if (error?.code !== 11000) {
-    return false;
-  }
+  if (error?.code !== 11000) return false;
 
   const keys = Object.keys(error.keyPattern || {});
 
   if (keys.includes("sku")) {
-    return errorResponse(
-      res,
-      409,
-      "Generated SKU already exists. Please try again."
-    );
+    return errorResponse(res, 409, "Generated SKU already exists. Please try again.");
   }
-
   if (keys.includes("slug")) {
-    return errorResponse(
-      res,
-      409,
-      "Generated product slug already exists. Please try again."
-    );
+    return errorResponse(res, 409, "Generated product slug already exists. Please try again.");
   }
-
   if (keys.includes("barcode")) {
-    return errorResponse(
-      res,
-      409,
-      "A product with this barcode already exists in this tenant."
-    );
+    return errorResponse(res, 409, "A product with this barcode already exists in this tenant.");
   }
 
-  return errorResponse(
-    res,
-    409,
-    "A product with the same unique value already exists."
-  );
+  return errorResponse(res, 409, "A product with the same unique value already exists.");
 };
 
 // ======================================================
@@ -460,10 +272,7 @@ export const createProduct = async (req, res) => {
 
   try {
     const tenant = await resolveTenant(req, true);
-
-    if (tenant.error) {
-      return errorResponse(res, 400, tenant.error);
-    }
+    if (tenant.error) return errorResponse(res, 400, tenant.error);
 
     const {
       category,
@@ -482,361 +291,130 @@ export const createProduct = async (req, res) => {
       trackSerial,
     } = req.body;
 
-    const {
-      tenantOwner,
-      business,
-      businessType,
-    } = tenant;
+    const { tenantOwner, business, businessType } = tenant;
 
-    // ==================================================
-    // BASIC REQUIRED VALUES
-    // ==================================================
+    if (!category) return errorResponse(res, 400, "Category is required.");
+    if (!brand) return errorResponse(res, 400, "Brand is required.");
+    if (!name?.trim()) return errorResponse(res, 400, "Product name is required.");
 
-    if (!category) {
-      return errorResponse(
-        res,
-        400,
-        "Category is required."
-      );
-    }
-
-    if (!brand) {
-      return errorResponse(
-        res,
-        400,
-        "Brand is required."
-      );
-    }
-
-    if (!name?.trim()) {
-      return errorResponse(
-        res,
-        400,
-        "Product name is required."
-      );
-    }
-
-    // ==================================================
-    // VALIDATE BUSINESS
-    // ==================================================
-
+    // Validate relations
     const businessDoc = await validateBusiness(business);
+    if (!businessDoc) return errorResponse(res, 400, "Business not found or inactive.");
 
-    if (!businessDoc) {
-      return errorResponse(
-        res,
-        400,
-        "Business not found or inactive."
-      );
-    }
-
-    // ==================================================
-    // VALIDATE BUSINESS TYPE
-    // ==================================================
-
-    const businessTypeDoc =
-      await validateBusinessType(
-        businessType,
-        business
-      );
-
+    const businessTypeDoc = await validateBusinessType(businessType, business);
     if (!businessTypeDoc) {
-      return errorResponse(
-        res,
-        400,
-        "Business type not found or does not belong to this business."
-      );
+      return errorResponse(res, 400, "Business type not found or does not belong to this business.");
     }
 
-    // ==================================================
-    // VALIDATE CATEGORY
-    // ==================================================
-
-    const categoryDoc = await validateCategory(
-      category,
-      tenantOwner,
-      business,
-      businessType
-    );
-
+    const categoryDoc = await validateCategory(category, tenantOwner, business, businessType);
     if (!categoryDoc) {
-      return errorResponse(
-        res,
-        400,
-        "Category not found or does not belong to this tenant."
-      );
+      return errorResponse(res, 400, "Category not found or does not belong to this tenant.");
     }
 
-    // ==================================================
-    // VALIDATE BRAND
-    // ==================================================
-
-    const brandDoc = await validateBrand(
-      brand,
-      business,
-      businessType
-    );
-
+    const brandDoc = await validateBrand(brand, business, businessType);
     if (!brandDoc) {
-      return errorResponse(
-        res,
-        400,
-        "Brand not found or does not belong to the selected business type."
-      );
+      return errorResponse(res, 400, "Brand not found or does not belong to the selected business type.");
     }
 
-    // ==================================================
-    // VALIDATE MODEL
-    // ==================================================
-
-    const modelDoc = await validateModel(
-      model,
-      business,
-      businessType,
-      brand
-    );
-
-    if (model && modelDoc === false) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid model ID."
-      );
-    }
-
+    const modelDoc = await validateModel(model, business, businessType, brand);
+    if (model && modelDoc === false) return errorResponse(res, 400, "Invalid model ID.");
     if (model && !modelDoc) {
-      return errorResponse(
-        res,
-        400,
-        "Model not found or does not belong to the selected brand and business type."
-      );
+      return errorResponse(res, 400, "Model not found or does not belong to the selected brand and business type.");
     }
 
-    // ==================================================
-    // PRODUCT TYPE / VARIANTS
-    // ==================================================
-
-    const parsedHasVariants = parseBoolean(
-      hasVariants,
-      productType === "variable"
-    );
-
-    if (
-      productType === "simple" &&
-      parsedHasVariants
-    ) {
-      return errorResponse(
-        res,
-        400,
-        "A simple product cannot have variants."
-      );
+    // Product type / variants consistency
+    const parsedHasVariants = parseBoolean(hasVariants, productType === "variable");
+    if (productType === "simple" && parsedHasVariants) {
+      return errorResponse(res, 400, "A simple product cannot have variants.");
+    }
+    if (productType === "variable" && !parsedHasVariants) {
+      return errorResponse(res, 400, "A variable product must have variants.");
     }
 
-    if (
-      productType === "variable" &&
-      !parsedHasVariants
-    ) {
-      return errorResponse(
-        res,
-        400,
-        "A variable product must have variants."
-      );
-    }
+    // Serial tracking default for mobiles
+    const isMobiles = businessTypeDoc.name?.toLowerCase().trim() === "mobiles";
+    const parsedTrackSerial = parseBoolean(trackSerial, isMobiles);
 
-    // ==================================================
-    // MOBILE SERIAL TRACKING
-    // ==================================================
+    const productName = normalizeTitleCase(name);
 
-    const isMobiles =
-      businessTypeDoc.name
-        ?.toLowerCase()
-        .trim() === "mobiles";
-
-    const parsedTrackSerial = parseBoolean(
-      trackSerial,
-      isMobiles
-    );
-
-    // ==================================================
-    // NORMALIZE PRODUCT NAME
-    // ==================================================
-
-    const productName = normalizeTitleCase(
-      name
-    );
-
-    // ==================================================
-    // GENERATE SLUG
-    // ==================================================
-
-    const productSlug =
-      await generateUniqueSlug(
-        productName,
-        tenantOwner
-      );
-
-    // ==================================================
-    // GENERATE SKU
-    // ==================================================
-
+    // Generate slug + SKU
+    const productSlug = await generateUniqueSlug(productName, tenantOwner);
     const productSku = await generateSku(
       tenantOwner,
+      business,
+      businessType,
       brandDoc.name,
       modelDoc?.name,
       productName
     );
 
-    // ==================================================
-    // BARCODE
-    // ==================================================
-
-    const normalizedBarcode =
-      normalizeBarcode(barcode);
-
+    // Barcode uniqueness
+    const normalizedBarcode = normalizeBarcode(barcode);
     if (normalizedBarcode) {
-      const existingBarcode =
-        await Product.findOne({
-          tenantOwner,
-          barcode: normalizedBarcode,
-        }).select("_id");
+      const existingBarcode = await Product.findOne({
+        tenantOwner,
+        barcode: normalizedBarcode,
+      }).select("_id");
 
       if (existingBarcode) {
-        return errorResponse(
-          res,
-          409,
-          "A product with this barcode already exists in this tenant."
-        );
+        return errorResponse(res, 409, "A product with this barcode already exists in this tenant.");
       }
     }
 
-    // ==================================================
-    // IMAGES
-    // ==================================================
-
+    // Images
     if (req.files?.length) {
       for (const file of req.files) {
-        const result =
-          await uploadToCloudinary(
-            file.buffer,
-            "pos/products"
-          );
-
+        const result = await uploadToCloudinary(file.buffer, "pos/products");
         uploadedImages.push({
           url: result.secure_url,
           publicId: result.public_id,
-          assetId:
-            result.asset_id || null,
+          assetId: result.asset_id || null,
         });
       }
     }
-
-    // ==================================================
-    // CREATE PRODUCT
-    // ==================================================
 
     const product = await Product.create({
       tenantOwner,
       business,
       businessType,
-
       category: categoryDoc._id,
       brand: brandDoc._id,
       model: modelDoc?._id || null,
-
       name: productName,
-
       slug: productSlug,
       sku: productSku,
-
       barcode: normalizedBarcode,
-
-      barcodeType: normalizedBarcode
-        ? barcodeType || "CUSTOM"
-        : "CUSTOM",
-
-      shortDescription:
-        shortDescription
-          ? normalizeTitleCase(shortDescription)
-          : "",
-
-      description:
-        description?.trim() || "",
-
+      barcodeType: normalizedBarcode ? barcodeType || "CUSTOM" : "CUSTOM",
+      shortDescription: shortDescription ? normalizeTitleCase(shortDescription) : "",
+      description: description?.trim() || "",
       images: uploadedImages,
-
       productType,
-
       hasVariants: parsedHasVariants,
-
       trackSerial: parsedTrackSerial,
-
       unit,
-
-      isFeatured: parseBoolean(
-        isFeatured,
-        false
-      ),
-
-      isActive: parseBoolean(
-        isActive,
-        true
-      ),
-
+      isFeatured: parseBoolean(isFeatured, false),
+      isActive: parseBoolean(isActive, true),
       createdBy: req.user._id,
     });
 
-    // ==================================================
-    // NO INVENTORY CREATED HERE
-    // ==================================================
-    //
-    // ProductInventory is created separately.
-    //
-    // Product = master information
-    // ProductInventory = stock + pricing
-    // InventoryUnit = physical serialized unit
-    // ==================================================
+    const populated = await populateProduct(Product.findById(product._id));
 
-    const populated =
-      await populateProduct(
-        Product.findById(product._id)
-      );
-
-    return successResponse(
-      res,
-      201,
-      "Product created successfully.",
-      populated
-    );
+    return successResponse(res, 201, "Product created successfully.", populated);
   } catch (error) {
-    console.error(
-      "Create Product Error:",
-      error
-    );
+    console.error("Create Product Error:", error);
 
-    // ==================================================
-    // CLOUDINARY CLEANUP
-    // ==================================================
-
+    // Cleanup uploaded images on failure
     for (const image of uploadedImages) {
       if (image?.publicId) {
         try {
-          await deleteFromCloudinary(
-            image.publicId
-          );
+          await deleteFromCloudinary(image.publicId);
         } catch {}
       }
     }
 
-    if (handleDuplicateError(error, res)) {
-      return;
-    }
+    if (handleDuplicateError(error, res)) return;
 
-    return errorResponse(
-      res,
-      500,
-      error.message ||
-        "Failed to create product."
-    );
+    return errorResponse(res, 500, error.message || "Failed to create product.");
   }
 };
 
@@ -844,30 +422,12 @@ export const createProduct = async (req, res) => {
 // GET ALL PRODUCTS
 // ======================================================
 
-export const getAllProducts = async (
-  req,
-  res
-) => {
+export const getAllProducts = async (req, res) => {
   try {
-    const tenant = await resolveTenant(
-      req,
-      false
-    );
+    const tenant = await resolveTenant(req, false);
+    if (tenant.error) return errorResponse(res, 400, tenant.error);
 
-    if (tenant.error) {
-      return errorResponse(
-        res,
-        400,
-        tenant.error
-      );
-    }
-
-    const {
-      tenantOwner,
-      business,
-      businessType,
-      context,
-    } = tenant;
+    const { tenantOwner, business, businessType, context } = tenant;
 
     const {
       page = 1,
@@ -878,71 +438,36 @@ export const getAllProducts = async (
       model,
       productType,
       isActive,
-      stockStatus,
+      isFeatured,
+      hasVariants,
       trackSerial,
     } = req.query;
 
     const query = {};
 
-    // ==================================================
-    // TENANT ISOLATION
-    // ==================================================
-
+    // Tenant isolation
     if (!context.isSuperAdmin) {
       query.tenantOwner = tenantOwner;
       query.business = business;
       query.businessType = businessType;
     } else if (tenantOwner) {
       query.tenantOwner = tenantOwner;
-
-      if (business) {
-        query.business = business;
-      }
-
-      if (businessType) {
-        query.businessType = businessType;
-      }
+      if (business) query.business = business;
+      if (businessType) query.businessType = businessType;
     }
 
-    // ==================================================
-    // SEARCH
-    // ==================================================
-
+    // Search
     if (search?.trim()) {
       const value = search.trim();
-
       query.$or = [
-        {
-          name: {
-            $regex: value,
-            $options: "i",
-          },
-        },
-        {
-          sku: {
-            $regex: value,
-            $options: "i",
-          },
-        },
-        {
-          slug: {
-            $regex: value,
-            $options: "i",
-          },
-        },
-        {
-          barcode: {
-            $regex: value,
-            $options: "i",
-          },
-        },
+        { name: { $regex: value, $options: "i" } },
+        { sku: { $regex: value, $options: "i" } },
+        { slug: { $regex: value, $options: "i" } },
+        { barcode: { $regex: value, $options: "i" } },
       ];
     }
 
-    // ==================================================
-    // FILTERS
-    // ==================================================
-
+    // Filters
     for (const [field, value] of [
       ["category", category],
       ["brand", brand],
@@ -950,136 +475,41 @@ export const getAllProducts = async (
     ]) {
       if (value) {
         if (!isValidObjectId(value)) {
-          return errorResponse(
-            res,
-            400,
-            `Invalid ${field} ID.`
-          );
+          return errorResponse(res, 400, `Invalid ${field} ID.`);
         }
-
         query[field] = value;
       }
     }
 
-    // ==================================================
-    // PRODUCT TYPE
-    // ==================================================
+    if (productType) query.productType = productType;
+    if (isActive !== undefined) query.isActive = parseBoolean(isActive);
+    if (isFeatured !== undefined) query.isFeatured = parseBoolean(isFeatured);
+    if (hasVariants !== undefined) query.hasVariants = parseBoolean(hasVariants);
+    if (trackSerial !== undefined) query.trackSerial = parseBoolean(trackSerial);
 
-    if (productType) {
-      query.productType = productType;
-    }
+    const pageNumber = Math.max(Number(page) || 1, 1);
+    const limitNumber = Math.min(Math.max(Number(limit) || 20, 1), 100);
+    const skip = (pageNumber - 1) * limitNumber;
 
-    // ==================================================
-    // STATUS
-    // ==================================================
-
-    if (isActive !== undefined) {
-      query.isActive = parseBoolean(
-        isActive
-      );
-    }
-
-    // ==================================================
-    // SERIAL TRACKING
-    // ==================================================
-
-    if (trackSerial !== undefined) {
-      query.trackSerial = parseBoolean(
-        trackSerial
-      );
-    }
-
-    // ==================================================
-    // PAGINATION
-    // ==================================================
-
-    const pageNumber = Math.max(
-      Number(page) || 1,
-      1
-    );
-
-    const limitNumber = Math.min(
-      Math.max(Number(limit) || 20, 1),
-      100
-    );
-
-    const skip =
-      (pageNumber - 1) *
-      limitNumber;
-
-    const [
-      products,
-      total,
-    ] = await Promise.all([
+    const [products, total] = await Promise.all([
       populateProduct(
-        Product.find(query)
-          .sort({
-            createdAt: -1,
-          })
-          .skip(skip)
-          .limit(limitNumber)
+        Product.find(query).sort({ createdAt: -1 }).skip(skip).limit(limitNumber)
       ),
-
       Product.countDocuments(query),
     ]);
 
-    // ==================================================
-    // STOCK STATUS
-    // ==================================================
-    //
-    // ProductInventory should be used for actual stock.
-    //
-    // This controller does not apply stockStatus yet.
-    // ==================================================
-
-    if (stockStatus) {
-      const allowedStatuses = [
-        "out-of-stock",
-        "low-stock",
-        "in-stock",
-      ];
-
-      if (
-        !allowedStatuses.includes(
-          stockStatus
-        )
-      ) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid stock status."
-        );
-      }
-    }
-
-    return successResponse(
-      res,
-      200,
-      "Products fetched successfully.",
-      {
-        products,
-        pagination: {
-          total,
-          page: pageNumber,
-          limit: limitNumber,
-          totalPages: Math.ceil(
-            total / limitNumber
-          ),
-        },
-      }
-    );
+    return successResponse(res, 200, "Products fetched successfully.", {
+      products,
+      pagination: {
+        total,
+        page: pageNumber,
+        limit: limitNumber,
+        totalPages: Math.ceil(total / limitNumber),
+      },
+    });
   } catch (error) {
-    console.error(
-      "Get All Products Error:",
-      error
-    );
-
-    return errorResponse(
-      res,
-      500,
-      error.message ||
-        "Failed to fetch products."
-    );
+    console.error("Get All Products Error:", error);
+    return errorResponse(res, 500, error.message || "Failed to fetch products.");
   }
 };
 
@@ -1087,84 +517,26 @@ export const getAllProducts = async (
 // GET PRODUCT BY ID
 // ======================================================
 
-export const getProductById = async (
-  req,
-  res
-) => {
+export const getProductById = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidObjectId(id)) return errorResponse(res, 400, "Invalid product ID.");
 
-    if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid product ID."
-      );
-    }
+    const tenant = await resolveTenant(req, false);
+    if (tenant.error) return errorResponse(res, 400, tenant.error);
 
-    const tenant = await resolveTenant(
-      req,
-      false
-    );
+    const query = { _id: id };
+    if (tenant.tenantOwner) query.tenantOwner = tenant.tenantOwner;
+    if (tenant.business) query.business = tenant.business;
+    if (tenant.businessType) query.businessType = tenant.businessType;
 
-    if (tenant.error) {
-      return errorResponse(
-        res,
-        400,
-        tenant.error
-      );
-    }
+    const product = await populateProduct(Product.findOne(query));
+    if (!product) return errorResponse(res, 404, "Product not found.");
 
-    const query = {
-      _id: id,
-    };
-
-    if (tenant.tenantOwner) {
-      query.tenantOwner =
-        tenant.tenantOwner;
-    }
-
-    if (tenant.business) {
-      query.business =
-        tenant.business;
-    }
-
-    if (tenant.businessType) {
-      query.businessType =
-        tenant.businessType;
-    }
-
-    const product =
-      await populateProduct(
-        Product.findOne(query)
-      );
-
-    if (!product) {
-      return errorResponse(
-        res,
-        404,
-        "Product not found."
-      );
-    }
-
-    return successResponse(
-      res,
-      200,
-      "Product fetched successfully.",
-      product
-    );
+    return successResponse(res, 200, "Product fetched successfully.", product);
   } catch (error) {
-    console.error(
-      "Get Product By ID Error:",
-      error
-    );
-
-    return errorResponse(
-      res,
-      500,
-      error.message ||
-        "Failed to fetch product."
-    );
+    console.error("Get Product By ID Error:", error);
+    return errorResponse(res, 500, error.message || "Failed to fetch product.");
   }
 };
 
@@ -1172,74 +544,27 @@ export const getProductById = async (
 // UPDATE PRODUCT
 // ======================================================
 
-export const updateProduct = async (
-  req,
-  res
-) => {
+export const updateProduct = async (req, res) => {
   const newUploadedImages = [];
 
   try {
     const { id } = req.params;
+    if (!isValidObjectId(id)) return errorResponse(res, 400, "Invalid product ID.");
 
-    if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid product ID."
-      );
-    }
+    const tenant = await resolveTenant(req, false);
+    if (tenant.error) return errorResponse(res, 400, tenant.error);
 
-    const tenant = await resolveTenant(
-      req,
-      false
-    );
+    const query = { _id: id };
+    if (tenant.tenantOwner) query.tenantOwner = tenant.tenantOwner;
+    if (tenant.business) query.business = tenant.business;
+    if (tenant.businessType) query.businessType = tenant.businessType;
 
-    if (tenant.error) {
-      return errorResponse(
-        res,
-        400,
-        tenant.error
-      );
-    }
+    const product = await Product.findOne(query);
+    if (!product) return errorResponse(res, 404, "Product not found.");
 
-    const query = {
-      _id: id,
-    };
-
-    if (tenant.tenantOwner) {
-      query.tenantOwner =
-        tenant.tenantOwner;
-    }
-
-    if (tenant.business) {
-      query.business =
-        tenant.business;
-    }
-
-    if (tenant.businessType) {
-      query.businessType =
-        tenant.businessType;
-    }
-
-    const product =
-      await Product.findOne(query);
-
-    if (!product) {
-      return errorResponse(
-        res,
-        404,
-        "Product not found."
-      );
-    }
-
-    const businessId =
-      product.business;
-
-    const businessTypeId =
-      product.businessType;
-
-    const tenantOwner =
-      product.tenantOwner;
+    const businessId = product.business;
+    const businessTypeId = product.businessType;
+    const tenantOwner = product.tenantOwner;
 
     const {
       category,
@@ -1259,33 +584,13 @@ export const updateProduct = async (
       removeImages,
     } = req.body;
 
-    // ==================================================
-    // VALIDATE BUSINESS
-    // ==================================================
-
-    const businessDoc =
-      await validateBusiness(
-        businessId
-      );
-
+    // Re-validate business / businessType (safety)
+    const businessDoc = await validateBusiness(businessId);
     if (!businessDoc) {
-      return errorResponse(
-        res,
-        400,
-        "Product business is not found or inactive."
-      );
+      return errorResponse(res, 400, "Product business is not found or inactive.");
     }
 
-    // ==================================================
-    // VALIDATE BUSINESS TYPE
-    // ==================================================
-
-    const businessTypeDoc =
-      await validateBusinessType(
-        businessTypeId,
-        businessId
-      );
-
+    const businessTypeDoc = await validateBusinessType(businessTypeId, businessId);
     if (!businessTypeDoc) {
       return errorResponse(
         res,
@@ -1294,91 +599,41 @@ export const updateProduct = async (
       );
     }
 
-    // ==================================================
-    // CATEGORY
-    // ==================================================
-
+    // Category
     if (category !== undefined) {
-      const categoryDoc =
-        await validateCategory(
-          category,
-          tenantOwner,
-          businessId,
-          businessTypeId
-        );
-
+      const categoryDoc = await validateCategory(category, tenantOwner, businessId, businessTypeId);
       if (!categoryDoc) {
-        return errorResponse(
-          res,
-          400,
-          "Category does not belong to this tenant."
-        );
+        return errorResponse(res, 400, "Category does not belong to this tenant.");
       }
-
-      product.category =
-        categoryDoc._id;
+      product.category = categoryDoc._id;
     }
 
-    // ==================================================
-    // BRAND
-    // ==================================================
-
+    // Brand
     if (brand !== undefined) {
-      const brandDoc =
-        await validateBrand(
-          brand,
-          businessId,
-          businessTypeId
-        );
-
+      const brandDoc = await validateBrand(brand, businessId, businessTypeId);
       if (!brandDoc) {
-        return errorResponse(
-          res,
-          400,
-          "Brand does not belong to the selected business type."
-        );
+        return errorResponse(res, 400, "Brand does not belong to the selected business type.");
       }
+      product.brand = brandDoc._id;
 
-      product.brand =
-        brandDoc._id;
-
-      // Reset model if it no longer
-      // belongs to the new brand.
-
+      // Reset model if it no longer belongs to the new brand
       if (product.model) {
-        const currentModel =
-          await validateModel(
-            product.model,
-            businessId,
-            businessTypeId,
-            brandDoc._id
-          );
-
-        if (!currentModel) {
-          product.model = null;
-        }
+        const currentModel = await validateModel(
+          product.model,
+          businessId,
+          businessTypeId,
+          brandDoc._id
+        );
+        if (!currentModel) product.model = null;
       }
     }
 
-    // ==================================================
-    // MODEL
-    // ==================================================
-
+    // Model
     if (model !== undefined) {
-      if (
-        model === null ||
-        model === ""
-      ) {
+      if (model === null || model === "") {
         product.model = null;
       } else {
-        const modelDoc =
-          await validateModel(
-            model,
-            businessId,
-            businessTypeId,
-            product.brand
-          );
-
+        const modelDoc = await validateModel(model, businessId, businessTypeId, product.brand);
         if (!modelDoc) {
           return errorResponse(
             res,
@@ -1386,30 +641,19 @@ export const updateProduct = async (
             "Model does not belong to the selected brand and business type."
           );
         }
-
-        product.model =
-          modelDoc._id;
+        product.model = modelDoc._id;
       }
     }
 
-    // ==================================================
-    // BARCODE
-    // ==================================================
-
+    // Barcode
     if (barcode !== undefined) {
-      const normalizedBarcode =
-        normalizeBarcode(barcode);
-
+      const normalizedBarcode = normalizeBarcode(barcode);
       if (normalizedBarcode) {
-        const exists =
-          await Product.findOne({
-            tenantOwner,
-            barcode:
-              normalizedBarcode,
-            _id: {
-              $ne: product._id,
-            },
-          }).select("_id");
+        const exists = await Product.findOne({
+          tenantOwner,
+          barcode: normalizedBarcode,
+          _id: { $ne: product._id },
+        }).select("_id");
 
         if (exists) {
           return errorResponse(
@@ -1419,34 +663,16 @@ export const updateProduct = async (
           );
         }
       }
-
-      product.barcode =
-        normalizedBarcode;
-
-      product.barcodeType =
-        normalizedBarcode
-          ? barcodeType ||
-            product.barcodeType ||
-            "CUSTOM"
-          : "CUSTOM";
-    } else if (
-      barcodeType !== undefined
-    ) {
-      product.barcodeType =
-        product.barcode
-          ? barcodeType
-          : "CUSTOM";
+      product.barcode = normalizedBarcode;
+      product.barcodeType = normalizedBarcode
+        ? barcodeType || product.barcodeType || "CUSTOM"
+        : "CUSTOM";
+    } else if (barcodeType !== undefined) {
+      product.barcodeType = product.barcode ? barcodeType : "CUSTOM";
     }
 
-    // ==================================================
-    // PRODUCT TYPE / VARIANTS
-    // ==================================================
-
-    const nextType =
-      productType !== undefined
-        ? productType
-        : product.productType;
-
+    // Product type / variants
+    const nextType = productType !== undefined ? productType : product.productType;
     const nextVariants =
       hasVariants !== undefined
         ? parseBoolean(hasVariants)
@@ -1454,140 +680,48 @@ export const updateProduct = async (
         ? productType === "variable"
         : product.hasVariants;
 
-    if (
-      nextType === "simple" &&
-      nextVariants
-    ) {
-      return errorResponse(
-        res,
-        400,
-        "A simple product cannot have variants."
-      );
+    if (nextType === "simple" && nextVariants) {
+      return errorResponse(res, 400, "A simple product cannot have variants.");
+    }
+    if (nextType === "variable" && !nextVariants) {
+      return errorResponse(res, 400, "A variable product must have variants.");
     }
 
-    if (
-      nextType === "variable" &&
-      !nextVariants
-    ) {
-      return errorResponse(
-        res,
-        400,
-        "A variable product must have variants."
-      );
-    }
-
-    product.productType =
-      nextType;
-
-    product.hasVariants =
-      nextVariants;
-
-    // ==================================================
-    // TRACK SERIAL
-    // ==================================================
+    product.productType = nextType;
+    product.hasVariants = nextVariants;
 
     if (trackSerial !== undefined) {
-      product.trackSerial =
-        parseBoolean(trackSerial);
+      product.trackSerial = parseBoolean(trackSerial);
     }
 
-    // ==================================================
-    // NAME + AUTO SLUG
-    // ==================================================
-
+    // Name + auto-regenerate slug
     if (name !== undefined) {
-      const normalizedName =
-        normalizeTitleCase(name);
-
+      const normalizedName = normalizeTitleCase(name);
       if (!normalizedName) {
-        return errorResponse(
-          res,
-          400,
-          "Product name cannot be empty."
-        );
+        return errorResponse(res, 400, "Product name cannot be empty.");
       }
 
-      const nameChanged =
-        normalizedName !==
-        product.name;
-
-      product.name =
-        normalizedName;
-
-      // Regenerate slug only when
-      // product name changes.
+      const nameChanged = normalizedName !== product.name;
+      product.name = normalizedName;
 
       if (nameChanged) {
-        product.slug =
-          await generateUniqueSlug(
-            normalizedName,
-            tenantOwner,
-            product._id
-          );
+        product.slug = await generateUniqueSlug(normalizedName, tenantOwner, product._id);
       }
     }
 
-    // ==================================================
-    // DESCRIPTION
-    // ==================================================
-
-    if (
-      shortDescription !== undefined
-    ) {
-      product.shortDescription =
-        normalizeTitleCase(
-          shortDescription
-        );
+    if (shortDescription !== undefined) {
+      product.shortDescription = normalizeTitleCase(shortDescription);
     }
-
-    if (
-      description !== undefined
-    ) {
-      product.description =
-        description.trim();
+    if (description !== undefined) {
+      product.description = description.trim();
     }
+    if (unit !== undefined) product.unit = unit;
+    if (isFeatured !== undefined) product.isFeatured = parseBoolean(isFeatured);
+    if (isActive !== undefined) product.isActive = parseBoolean(isActive);
 
-    // ==================================================
-    // UNIT
-    // ==================================================
-
-    if (unit !== undefined) {
-      product.unit = unit;
-    }
-
-    // ==================================================
-    // FEATURED / ACTIVE
-    // ==================================================
-
-    if (isFeatured !== undefined) {
-      product.isFeatured =
-        parseBoolean(isFeatured);
-    }
-
-    if (isActive !== undefined) {
-      product.isActive =
-        parseBoolean(isActive);
-    }
-
-    // ==================================================
-    // SKU / SLUG
-    // ==================================================
-    //
-    // SKU and slug are NOT accepted from frontend.
-    //
-    // They remain backend controlled.
-    //
-    // SKU changes are intentionally not allowed.
-    // Slug changes automatically when name changes.
-    // ==================================================
-
-    // ==================================================
-    // REMOVE IMAGES
-    // ==================================================
-
+    // Remove images
     if (removeImages) {
       let images = removeImages;
-
       if (typeof images === "string") {
         try {
           images = JSON.parse(images);
@@ -1598,122 +732,46 @@ export const updateProduct = async (
 
       if (Array.isArray(images)) {
         for (const publicId of images) {
-          if (!publicId) {
-            continue;
-          }
+          if (!publicId) continue;
+          const exists = product.images.some((img) => img.publicId === publicId);
+          if (!exists) continue;
 
-          const exists =
-            product.images.some(
-              (img) =>
-                img.publicId ===
-                publicId
-            );
-
-          if (!exists) {
-            continue;
-          }
-
-          await deleteFromCloudinary(
-            publicId
-          );
-
-          product.images =
-            product.images.filter(
-              (img) =>
-                img.publicId !==
-                publicId
-            );
+          await deleteFromCloudinary(publicId);
+          product.images = product.images.filter((img) => img.publicId !== publicId);
         }
       }
     }
 
-    // ==================================================
-    // ADD NEW IMAGES
-    // ==================================================
-
+    // Add new images
     if (req.files?.length) {
       for (const file of req.files) {
-        const result =
-          await uploadToCloudinary(
-            file.buffer,
-            "pos/products"
-          );
-
-        newUploadedImages.push(
-          result.public_id
-        );
-
+        const result = await uploadToCloudinary(file.buffer, "pos/products");
+        newUploadedImages.push(result.public_id);
         product.images.push({
           url: result.secure_url,
-          publicId:
-            result.public_id,
-          assetId:
-            result.asset_id || null,
+          publicId: result.public_id,
+          assetId: result.asset_id || null,
         });
       }
     }
 
-    // ==================================================
-    // UPDATED BY
-    // ==================================================
-
-    product.updatedBy =
-      req.user._id;
-
-    // ==================================================
-    // SAVE
-    // ==================================================
-
+    product.updatedBy = req.user._id;
     await product.save();
 
-    // ==================================================
-    // NO INVENTORY SYNC
-    // ==================================================
-    //
-    // Financial fields are no longer in Product.
-    //
-    // ProductInventory is managed by its own controller.
-    // ==================================================
-
-    const updated =
-      await populateProduct(
-        Product.findById(product._id)
-      );
-
-    return successResponse(
-      res,
-      200,
-      "Product updated successfully.",
-      updated
-    );
+    const updated = await populateProduct(Product.findById(product._id));
+    return successResponse(res, 200, "Product updated successfully.", updated);
   } catch (error) {
-    console.error(
-      "Update Product Error:",
-      error
-    );
-
-    // ==================================================
-    // CLEANUP NEW IMAGES
-    // ==================================================
+    console.error("Update Product Error:", error);
 
     for (const publicId of newUploadedImages) {
       try {
-        await deleteFromCloudinary(
-          publicId
-        );
+        await deleteFromCloudinary(publicId);
       } catch {}
     }
 
-    if (handleDuplicateError(error, res)) {
-      return;
-    }
+    if (handleDuplicateError(error, res)) return;
 
-    return errorResponse(
-      res,
-      500,
-      error.message ||
-        "Failed to update product."
-    );
+    return errorResponse(res, 500, error.message || "Failed to update product.");
   }
 };
 
@@ -1721,132 +779,50 @@ export const updateProduct = async (
 // DELETE PRODUCT — PERMANENT
 // ======================================================
 
-export const deleteProduct = async (
-  req,
-  res
-) => {
+export const deleteProduct = async (req, res) => {
   try {
     const { id } = req.params;
+    if (!isValidObjectId(id)) return errorResponse(res, 400, "Invalid product ID.");
 
-    if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid product ID."
-      );
-    }
+    const tenant = await resolveTenant(req, false);
+    if (tenant.error) return errorResponse(res, 400, tenant.error);
 
-    const tenant = await resolveTenant(
-      req,
-      false
-    );
+    const query = { _id: id };
+    if (tenant.tenantOwner) query.tenantOwner = tenant.tenantOwner;
+    if (tenant.business) query.business = tenant.business;
+    if (tenant.businessType) query.businessType = tenant.businessType;
 
-    if (tenant.error) {
-      return errorResponse(
-        res,
-        400,
-        tenant.error
-      );
-    }
+    // Permanent delete with tenant isolation
+    const product = await Product.findOneAndDelete(query);
+    if (!product) return errorResponse(res, 404, "Product not found.");
 
-    const query = {
-      _id: id,
-    };
-
-    if (tenant.tenantOwner) {
-      query.tenantOwner =
-        tenant.tenantOwner;
-    }
-
-    if (tenant.business) {
-      query.business =
-        tenant.business;
-    }
-
-    if (tenant.businessType) {
-      query.businessType =
-        tenant.businessType;
-    }
-
-    const product =
-      await Product.findOne(query);
-
-    if (!product) {
-      return errorResponse(
-        res,
-        404,
-        "Product not found."
-      );
-    }
-
-    // ==================================================
-    // DELETE CLOUDINARY IMAGES
-    // ==================================================
-
-    if (
-      Array.isArray(product.images)
-    ) {
+    // Cloudinary cleanup
+    if (Array.isArray(product.images)) {
       for (const image of product.images) {
         if (image?.publicId) {
           try {
-            await deleteFromCloudinary(
-              image.publicId
-            );
-          } catch (error) {
-            console.error(
-              "Cloudinary delete failed:",
-              image.publicId,
-              error?.message
-            );
+            await deleteFromCloudinary(image.publicId);
+          } catch (err) {
+            console.error("Cloudinary delete failed:", image.publicId, err?.message);
           }
         }
       }
     }
 
-    // ==================================================
-    // DELETE INVENTORY UNITS
-    // ==================================================
-
+    // Cascade: remove related inventory data (tenant-safe)
     await InventoryUnit.deleteMany({
-      tenantOwner:
-        product.tenantOwner,
+      tenantOwner: product.tenantOwner,
       product: product._id,
     });
-
-    // ==================================================
-    // DELETE PRODUCT INVENTORY
-    // ==================================================
 
     await ProductInventory.deleteMany({
-      tenantOwner:
-        product.tenantOwner,
+      tenantOwner: product.tenantOwner,
       product: product._id,
     });
 
-    // ==================================================
-    // DELETE PRODUCT
-    // ==================================================
-
-    await Product.deleteOne({
-      _id: product._id,
-    });
-
-    return successResponse(
-      res,
-      200,
-      "Product deleted permanently."
-    );
+    return successResponse(res, 200, "Product deleted successfully.");
   } catch (error) {
-    console.error(
-      "Delete Product Error:",
-      error
-    );
-
-    return errorResponse(
-      res,
-      500,
-      error.message ||
-        "Failed to delete product."
-    );
+    console.error("Delete Product Error:", error);
+    return errorResponse(res, 500, error.message || "Failed to delete product.");
   }
 };

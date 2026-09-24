@@ -181,19 +181,19 @@ const saleSchema = new mongoose.Schema(
     referenceNumber: {
       type: String,
       trim: true,
-      default: "",
+      default: null,
     },
 
     // ==================================================
     // NOTES
     // ==================================================
 
-    notes: {
-      type: String,
-      trim: true,
-      maxlength: 1000,
-      default: "",
-    },
+    // notes: {
+    //   type: String,
+    //   trim: true,
+    //   maxlength: 1000,
+    //   default: null,
+    // },
 
     // ==================================================
     // AUDIT

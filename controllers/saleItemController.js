@@ -2,6 +2,7 @@ import SaleItem from "../models/SaleItem.js";
 import Sale from "../models/Sale.js";
 import Product from "../models/Product.js";
 import ProductInventory from "../models/ProductInventory.js";
+import InventoryUnit from "../models/InventoryUnit.js";
 
 import {
   errorResponse,
@@ -23,16 +24,11 @@ const getScope = async (req) => {
 
   if (tenant.isSuperAdmin) {
     const tenantOwner =
-      req.body.tenantOwner ||
-      req.query.tenantOwner;
-
+      req.body.tenantOwner || req.query.tenantOwner;
     const business =
-      req.body.business ||
-      req.query.business;
-
+      req.body.business || req.query.business;
     const businessType =
-      req.body.businessType ||
-      req.query.businessType;
+      req.body.businessType || req.query.businessType;
 
     if (
       !tenantOwner ||
@@ -47,11 +43,7 @@ const getScope = async (req) => {
 
     return {
       tenant,
-      query: {
-        tenantOwner,
-        business,
-        businessType,
-      },
+      query: { tenantOwner, business, businessType },
     };
   }
 
@@ -64,18 +56,26 @@ const getScope = async (req) => {
 const calculateLine = ({
   quantity,
   salePrice,
-  discount = 0,
+  discountPercent = 0,
   tax = 0,
 }) => {
-  const lineSubtotal = quantity * salePrice;
-  const discountAmount = Math.min(discount, lineSubtotal);
+  const qty = Number(quantity) || 0;
+  const price = Number(salePrice) || 0;
+  const percent = Number(discountPercent) || 0;
+  const taxAmount = Number(tax) || 0;
 
-  const lineTotal =
-    lineSubtotal - discountAmount + tax;
+  const lineSubtotal = qty * price;
+  const discountAmount = Math.min(
+    (lineSubtotal * percent) / 100,
+    lineSubtotal
+  );
+
+  const lineTotal = lineSubtotal - discountAmount + taxAmount;
 
   return {
-    lineSubtotal,
-    lineTotal,
+    lineSubtotal: Number(lineSubtotal.toFixed(2)),
+    discountAmount: Number(discountAmount.toFixed(2)),
+    lineTotal: Number(lineTotal.toFixed(2)),
   };
 };
 
@@ -86,38 +86,40 @@ const recalculateSale = async (sale, scope, userId) => {
   });
 
   const subtotal = items.reduce(
-    (sum, item) => sum + item.lineSubtotal,
+    (sum, item) => sum + Number(item.lineSubtotal || 0),
     0
   );
-
   const discount = items.reduce(
-    (sum, item) => sum + item.discount,
+    (sum, item) => sum + Number(item.discount || 0),
     0
   );
-
   const tax = items.reduce(
-    (sum, item) => sum + item.tax,
+    (sum, item) => sum + Number(item.tax || 0),
     0
   );
 
-  sale.subtotal = subtotal;
-  sale.discount = discount;
-  sale.tax = tax;
+  sale.subtotal = Number(subtotal.toFixed(2));
+  sale.discount = Number(discount.toFixed(2));
+  sale.tax = Number(tax.toFixed(2));
 
-  sale.totalAmount =
-    subtotal -
-    discount +
-    tax +
-    (sale.shippingCost || 0) +
-    (sale.otherCharges || 0);
+  sale.totalAmount = Number(
+    (
+      subtotal -
+      discount +
+      tax +
+      (sale.shippingCost || 0) +
+      (sale.otherCharges || 0)
+    ).toFixed(2)
+  );
 
   sale.paidAmount = Math.min(
-    sale.paidAmount || 0,
+    Number(sale.paidAmount || 0),
     sale.totalAmount
   );
 
-  sale.dueAmount =
-    sale.totalAmount - sale.paidAmount;
+  sale.dueAmount = Number(
+    (sale.totalAmount - sale.paidAmount).toFixed(2)
+  );
 
   sale.paymentStatus =
     sale.dueAmount <= 0
@@ -127,7 +129,6 @@ const recalculateSale = async (sale, scope, userId) => {
         : "unpaid";
 
   sale.updatedBy = userId;
-
   await sale.save();
 };
 
@@ -136,38 +137,27 @@ const getPopulatedItem = (id) =>
     .populate("tenantOwner", "name email")
     .populate("business", "name")
     .populate("businessType", "name")
-    .populate(
-      "sale",
-      "saleNumber saleDate status totalAmount"
-    )
+    .populate("sale", "saleNumber saleDate status totalAmount")
     .populate("product", "name sku barcode")
     .populate(
       "productInventory",
-      "color size quantity salePrice imei unitBarcode"
+      "color size quantity salePrice discount tax"
     )
     .populate("createdBy", "name email")
     .populate("updatedBy", "name email");
 
-/**
- * Atomic stock change.
- * Returns the updated inventory document or null on failure.
- */
 const adjustInventoryQuantity = async (
   inventoryId,
   delta,
   userId,
   scope
 ) => {
-  // delta < 0 → deduct, delta > 0 → restore
-  const updated = await ProductInventory.findOneAndUpdate(
+  return ProductInventory.findOneAndUpdate(
     {
       _id: inventoryId,
       ...scope,
       isActive: true,
-      // prevent going negative when deducting
-      ...(delta < 0
-        ? { quantity: { $gte: Math.abs(delta) } }
-        : {}),
+      ...(delta < 0 ? { quantity: { $gte: Math.abs(delta) } } : {}),
     },
     {
       $inc: { quantity: delta },
@@ -175,8 +165,113 @@ const adjustInventoryQuantity = async (
     },
     { new: true }
   );
+};
 
-  return updated;
+/**
+ * Deactivate InventoryUnit after successful sale
+ * Supports both inventoryUnit ID and IMEI string
+ */
+const deactivateInventoryUnit = async ({
+  inventoryUnitId,
+  imei,
+  scope,
+  userId,
+}) => {
+  // 1. Prefer exact ID (most reliable)
+  if (inventoryUnitId && isValidObjectId(inventoryUnitId)) {
+    const updated = await InventoryUnit.findOneAndUpdate(
+      {
+        _id: inventoryUnitId,
+        ...scope,
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+          updatedBy: userId,
+        },
+      },
+      { new: true }
+    );
+
+    if (updated) {
+      console.log(`✅ InventoryUnit deactivated by ID: ${inventoryUnitId}`);
+      return true;
+    }
+  }
+
+  // 2. Fallback to IMEI
+  if (imei) {
+    const normalizedImei = String(imei).trim().toUpperCase();
+
+    const updated = await InventoryUnit.findOneAndUpdate(
+      {
+        imei: normalizedImei,
+        tenantOwner: scope.tenantOwner, // only tenantOwner is enough for uniqueness
+        isActive: true,
+      },
+      {
+        $set: {
+          isActive: false,
+          updatedBy: userId,
+        },
+      },
+      { new: true }
+    );
+
+    if (updated) {
+      console.log(`✅ InventoryUnit deactivated by IMEI: ${normalizedImei}`);
+      return true;
+    } else {
+      console.warn(`⚠️ InventoryUnit NOT found for IMEI: ${normalizedImei}`);
+    }
+  }
+
+  return false;
+};
+
+/**
+ * Restore InventoryUnit when SaleItem is deleted
+ */
+const restoreInventoryUnit = async ({
+  inventoryUnitId,
+  imei,
+  scope,
+  userId,
+}) => {
+  if (inventoryUnitId && isValidObjectId(inventoryUnitId)) {
+    await InventoryUnit.findOneAndUpdate(
+      {
+        _id: inventoryUnitId,
+        ...scope,
+        isActive: false,
+      },
+      {
+        $set: {
+          isActive: true,
+          updatedBy: userId,
+        },
+      }
+    );
+    return;
+  }
+
+  if (imei) {
+    const normalizedImei = String(imei).trim().toUpperCase();
+    await InventoryUnit.findOneAndUpdate(
+      {
+        imei: normalizedImei,
+        tenantOwner: scope.tenantOwner,
+        isActive: false,
+      },
+      {
+        $set: {
+          isActive: true,
+          updatedBy: userId,
+        },
+      }
+    );
+  }
 };
 
 // =====================================================
@@ -195,13 +290,15 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
-    const { tenant, query: scope } = scopeData;
+    const { query: scope } = scopeData;
 
     const {
       sale,
       product,
       productInventory,
       quantity,
+      inventoryUnit, // ← important
+      imei,
     } = req.body;
 
     if (
@@ -217,35 +314,20 @@ export const createSaleItem = async (req, res, next) => {
     }
 
     if (!quantity || quantity <= 0) {
-      return errorResponse(
-        res,
-        400,
-        "Valid quantity is required."
-      );
+      return errorResponse(res, 400, "Valid quantity is required.");
     }
 
-    const saleDoc = await Sale.findOne({
-      _id: sale,
-      ...scope,
-    });
-
+    const saleDoc = await Sale.findOne({ _id: sale, ...scope });
     if (!saleDoc) {
       return errorResponse(res, 404, "Sale not found.");
     }
 
     if (
-      [
-        "completed",
-        "partially_returned",
-        "returned",
-        "cancelled",
-      ].includes(saleDoc.status)
+      ["completed", "partially_returned", "returned", "cancelled"].includes(
+        saleDoc.status
+      )
     ) {
-      return errorResponse(
-        res,
-        400,
-        "Sale cannot accept new items."
-      );
+      return errorResponse(res, 400, "Sale cannot accept new items.");
     }
 
     const productDoc = await Product.findOne({
@@ -253,7 +335,6 @@ export const createSaleItem = async (req, res, next) => {
       ...scope,
       isActive: true,
     });
-
     if (!productDoc) {
       return errorResponse(res, 404, "Product not found.");
     }
@@ -264,13 +345,8 @@ export const createSaleItem = async (req, res, next) => {
       product,
       isActive: true,
     });
-
     if (!inventory) {
-      return errorResponse(
-        res,
-        404,
-        "Product inventory variant not found."
-      );
+      return errorResponse(res, 404, "Product inventory variant not found.");
     }
 
     if (quantity > inventory.quantity) {
@@ -281,8 +357,7 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
-    // For serial (IMEI) items → quantity must be 1
-    if (inventory.imei && quantity > 1) {
+    if (productDoc.trackSerial && quantity > 1) {
       return errorResponse(
         res,
         400,
@@ -295,7 +370,6 @@ export const createSaleItem = async (req, res, next) => {
       productInventory,
       ...scope,
     });
-
     if (exists) {
       return errorResponse(
         res,
@@ -304,20 +378,19 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
-    const salePrice =
-      req.body.salePrice ?? inventory.salePrice ?? 0;
-    const discount =
-      req.body.discount ?? inventory.discount ?? 0;
-    const tax = req.body.tax ?? inventory.tax ?? 0;
+    // ========== PRICE FROM INVENTORY ==========
+    const salePrice = Number(inventory.salePrice) || 0;
+    const discountPercent = Number(inventory.discount) || 0;
+    const tax = Number(req.body.tax ?? inventory.tax ?? 0);
 
-    const { lineSubtotal, lineTotal } = calculateLine({
+    const { lineSubtotal, discountAmount, lineTotal } = calculateLine({
       quantity,
       salePrice,
-      discount,
+      discountPercent,
       tax,
     });
 
-    // ---------- ATOMIC STOCK DEDUCTION ----------
+    // ---------- DEDUCT STOCK ----------
     const updatedInventory = await adjustInventoryQuantity(
       inventory._id,
       -quantity,
@@ -333,7 +406,8 @@ export const createSaleItem = async (req, res, next) => {
       );
     }
 
-    // Snapshot IMEI + unitBarcode from inventory
+    const finalImei = imei?.toString().trim().toUpperCase() || null;
+
     const saleItem = await SaleItem.create({
       ...scope,
       sale,
@@ -341,13 +415,20 @@ export const createSaleItem = async (req, res, next) => {
       productInventory,
       quantity,
       salePrice,
-      discount,
+      discount: discountAmount,
       tax,
       lineSubtotal,
       lineTotal,
-      imei: inventory.imei || null,
-      unitBarcode: inventory.unitBarcode || null,
+      imei: finalImei,
       createdBy: req.user._id,
+    });
+
+    // ========== DEACTIVATE IMEI / UNIT ==========
+    await deactivateInventoryUnit({
+      inventoryUnitId: inventoryUnit,
+      imei: finalImei,
+      scope,
+      userId: req.user._id,
     });
 
     await recalculateSale(saleDoc, scope, req.user._id);
@@ -364,13 +445,12 @@ export const createSaleItem = async (req, res, next) => {
 };
 
 // =====================================================
-// GET ALL
+// GET ALL / GET BY SALE / GET BY ID  (unchanged)
 // =====================================================
 
 export const getAllSaleItems = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
-
     if (!scopeData) {
       return errorResponse(
         res,
@@ -380,7 +460,6 @@ export const getAllSaleItems = async (req, res, next) => {
     }
 
     const { query: scope } = scopeData;
-
     const {
       page = 1,
       limit = 20,
@@ -391,41 +470,26 @@ export const getAllSaleItems = async (req, res, next) => {
     } = req.query;
 
     const currentPage = Math.max(Number(page) || 1, 1);
-    const currentLimit = Math.min(
-      Math.max(Number(limit) || 20, 1),
-      100
-    );
+    const currentLimit = Math.min(Math.max(Number(limit) || 20, 1), 100);
 
     const filter = { ...scope };
 
     if (sale) {
-      if (!isValidObjectId(sale)) {
+      if (!isValidObjectId(sale))
         return errorResponse(res, 400, "Invalid sale ID.");
-      }
       filter.sale = sale;
     }
-
     if (product) {
-      if (!isValidObjectId(product)) {
+      if (!isValidObjectId(product))
         return errorResponse(res, 400, "Invalid product ID.");
-      }
       filter.product = product;
     }
-
     if (productInventory) {
-      if (!isValidObjectId(productInventory)) {
-        return errorResponse(
-          res,
-          400,
-          "Invalid product inventory ID."
-        );
-      }
+      if (!isValidObjectId(productInventory))
+        return errorResponse(res, 400, "Invalid product inventory ID.");
       filter.productInventory = productInventory;
     }
-
-    if (imei) {
-      filter.imei = String(imei).trim().toUpperCase();
-    }
+    if (imei) filter.imei = String(imei).trim().toUpperCase();
 
     const skip = (currentPage - 1) * currentLimit;
 
@@ -433,49 +497,35 @@ export const getAllSaleItems = async (req, res, next) => {
       SaleItem.find(filter)
         .populate("business", "name")
         .populate("businessType", "name")
-        .populate(
-          "sale",
-          "saleNumber saleDate status totalAmount"
-        )
+        .populate("sale", "saleNumber saleDate status totalAmount")
         .populate("product", "name sku barcode")
         .populate(
           "productInventory",
-          "color size quantity salePrice imei unitBarcode"
+          "color size quantity salePrice discount tax"
         )
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(currentLimit),
-
       SaleItem.countDocuments(filter),
     ]);
 
-    return successResponse(
-      res,
-      200,
-      "Sale items fetched successfully.",
-      {
-        saleItems: items,
-        pagination: {
-          total,
-          page: currentPage,
-          limit: currentLimit,
-          totalPages: Math.ceil(total / currentLimit),
-        },
-      }
-    );
+    return successResponse(res, 200, "Sale items fetched successfully.", {
+      saleItems: items,
+      pagination: {
+        total,
+        page: currentPage,
+        limit: currentLimit,
+        totalPages: Math.ceil(total / currentLimit),
+      },
+    });
   } catch (error) {
     next(error);
   }
 };
 
-// =====================================================
-// GET BY SALE
-// =====================================================
-
 export const getSaleItemsBySale = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
-
     if (!scopeData) {
       return errorResponse(
         res,
@@ -491,45 +541,26 @@ export const getSaleItemsBySale = async (req, res, next) => {
       return errorResponse(res, 400, "Invalid sale ID.");
     }
 
-    const sale = await Sale.findOne({
-      _id: saleId,
-      ...scope,
-    });
+    const sale = await Sale.findOne({ _id: saleId, ...scope });
+    if (!sale) return errorResponse(res, 404, "Sale not found.");
 
-    if (!sale) {
-      return errorResponse(res, 404, "Sale not found.");
-    }
-
-    const items = await SaleItem.find({
-      sale: saleId,
-      ...scope,
-    })
+    const items = await SaleItem.find({ sale: saleId, ...scope })
       .populate("product", "name sku barcode")
       .populate(
         "productInventory",
-        "color size quantity salePrice imei unitBarcode"
+        "color size quantity salePrice discount tax"
       )
       .sort({ createdAt: 1 });
 
-    return successResponse(
-      res,
-      200,
-      "Sale items fetched successfully.",
-      items
-    );
+    return successResponse(res, 200, "Sale items fetched successfully.", items);
   } catch (error) {
     next(error);
   }
 };
 
-// =====================================================
-// GET BY ID
-// =====================================================
-
 export const getSaleItemById = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
-
     if (!scopeData) {
       return errorResponse(
         res,
@@ -542,46 +573,27 @@ export const getSaleItemById = async (req, res, next) => {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid sale item ID."
-      );
+      return errorResponse(res, 400, "Invalid sale item ID.");
     }
 
-    const item = await SaleItem.findOne({
-      _id: id,
-      ...scope,
-    })
+    const item = await SaleItem.findOne({ _id: id, ...scope })
       .populate("tenantOwner", "name email")
       .populate("business", "name")
       .populate("businessType", "name")
-      .populate(
-        "sale",
-        "saleNumber saleDate status totalAmount"
-      )
+      .populate("sale", "saleNumber saleDate status totalAmount")
       .populate("product", "name sku barcode")
       .populate(
         "productInventory",
-        "color size quantity salePrice imei unitBarcode"
+        "color size quantity salePrice discount tax"
       )
       .populate("createdBy", "name email")
       .populate("updatedBy", "name email");
 
     if (!item) {
-      return errorResponse(
-        res,
-        404,
-        "Sale item not found."
-      );
+      return errorResponse(res, 404, "Sale item not found.");
     }
 
-    return successResponse(
-      res,
-      200,
-      "Sale item fetched successfully.",
-      item
-    );
+    return successResponse(res, 200, "Sale item fetched successfully.", item);
   } catch (error) {
     next(error);
   }
@@ -594,7 +606,6 @@ export const getSaleItemById = async (req, res, next) => {
 export const updateSaleItem = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
-
     if (!scopeData) {
       return errorResponse(
         res,
@@ -607,46 +618,23 @@ export const updateSaleItem = async (req, res, next) => {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid sale item ID."
-      );
+      return errorResponse(res, 400, "Invalid sale item ID.");
     }
 
-    const saleItem = await SaleItem.findOne({
-      _id: id,
-      ...scope,
-    });
-
+    const saleItem = await SaleItem.findOne({ _id: id, ...scope });
     if (!saleItem) {
-      return errorResponse(
-        res,
-        404,
-        "Sale item not found."
-      );
+      return errorResponse(res, 404, "Sale item not found.");
     }
 
-    const sale = await Sale.findOne({
-      _id: saleItem.sale,
-      ...scope,
-    });
-
+    const sale = await Sale.findOne({ _id: saleItem.sale, ...scope });
     if (!sale) {
-      return errorResponse(
-        res,
-        404,
-        "Related sale not found."
-      );
+      return errorResponse(res, 404, "Related sale not found.");
     }
 
     if (
-      [
-        "completed",
-        "partially_returned",
-        "returned",
-        "cancelled",
-      ].includes(sale.status)
+      ["completed", "partially_returned", "returned", "cancelled"].includes(
+        sale.status
+      )
     ) {
       return errorResponse(
         res,
@@ -658,8 +646,7 @@ export const updateSaleItem = async (req, res, next) => {
     const product = req.body.product || saleItem.product;
     const productInventory =
       req.body.productInventory || saleItem.productInventory;
-    const quantity =
-      req.body.quantity ?? saleItem.quantity;
+    const quantity = req.body.quantity ?? saleItem.quantity;
 
     if (
       !isValidObjectId(product) ||
@@ -678,7 +665,6 @@ export const updateSaleItem = async (req, res, next) => {
       ...scope,
       isActive: true,
     });
-
     if (!productDoc) {
       return errorResponse(res, 404, "Product not found.");
     }
@@ -689,17 +675,11 @@ export const updateSaleItem = async (req, res, next) => {
       product,
       isActive: true,
     });
-
     if (!inventory) {
-      return errorResponse(
-        res,
-        404,
-        "Product inventory variant not found."
-      );
+      return errorResponse(res, 404, "Product inventory variant not found.");
     }
 
-    // For serial (IMEI) items → quantity must be 1
-    if (inventory.imei && quantity > 1) {
+    if (productDoc.trackSerial && quantity > 1) {
       return errorResponse(
         res,
         400,
@@ -707,9 +687,8 @@ export const updateSaleItem = async (req, res, next) => {
       );
     }
 
-    // ---------- QUANTITY DIFFERENCE ----------
     const oldQty = saleItem.quantity;
-    const diff = quantity - oldQty; // positive = need more stock, negative = return stock
+    const diff = quantity - oldQty;
 
     if (diff > 0 && diff > inventory.quantity) {
       return errorResponse(
@@ -725,7 +704,6 @@ export const updateSaleItem = async (req, res, next) => {
       ...scope,
       _id: { $ne: id },
     });
-
     if (duplicate) {
       return errorResponse(
         res,
@@ -734,31 +712,24 @@ export const updateSaleItem = async (req, res, next) => {
       );
     }
 
-    const salePrice =
-      req.body.salePrice ??
-      saleItem.salePrice ??
-      inventory.salePrice ??
-      0;
-    const discount =
-      req.body.discount ?? saleItem.discount ?? 0;
-    const tax = req.body.tax ?? saleItem.tax ?? 0;
+    const salePrice = Number(inventory.salePrice) || 0;
+    const discountPercent = Number(inventory.discount) || 0;
+    const tax = Number(req.body.tax ?? saleItem.tax ?? inventory.tax ?? 0);
 
-    const { lineSubtotal, lineTotal } = calculateLine({
+    const { lineSubtotal, discountAmount, lineTotal } = calculateLine({
       quantity,
       salePrice,
-      discount,
+      discountPercent,
       tax,
     });
 
-    // ---------- ATOMIC STOCK ADJUSTMENT ----------
     if (diff !== 0) {
       const updatedInventory = await adjustInventoryQuantity(
         inventory._id,
-        -diff, // if diff>0 we subtract, if diff<0 we add
+        -diff,
         req.user._id,
         scope
       );
-
       if (!updatedInventory) {
         return errorResponse(
           res,
@@ -768,22 +739,39 @@ export const updateSaleItem = async (req, res, next) => {
       }
     }
 
+    const oldImei = saleItem.imei;
+    const newImei =
+      req.body.imei?.toString().trim().toUpperCase() || oldImei;
+
     saleItem.product = product;
     saleItem.productInventory = productInventory;
     saleItem.quantity = quantity;
     saleItem.salePrice = salePrice;
-    saleItem.discount = discount;
+    saleItem.discount = discountAmount;
     saleItem.tax = tax;
     saleItem.lineSubtotal = lineSubtotal;
     saleItem.lineTotal = lineTotal;
-
-    // Always keep the latest IMEI / unitBarcode snapshot
-    saleItem.imei = inventory.imei || null;
-    saleItem.unitBarcode = inventory.unitBarcode || null;
-
+    saleItem.imei = newImei;
     saleItem.updatedBy = req.user._id;
 
     await saleItem.save();
+
+    // Restore old IMEI + deactivate new one
+    if (oldImei && oldImei !== newImei) {
+      await restoreInventoryUnit({
+        imei: oldImei,
+        scope,
+        userId: req.user._id,
+      });
+    }
+    if (newImei) {
+      await deactivateInventoryUnit({
+        inventoryUnitId: req.body.inventoryUnit,
+        imei: newImei,
+        scope,
+        userId: req.user._id,
+      });
+    }
 
     await recalculateSale(sale, scope, req.user._id);
 
@@ -805,7 +793,6 @@ export const updateSaleItem = async (req, res, next) => {
 export const deleteSaleItem = async (req, res, next) => {
   try {
     const scopeData = await getScope(req);
-
     if (!scopeData) {
       return errorResponse(
         res,
@@ -818,46 +805,23 @@ export const deleteSaleItem = async (req, res, next) => {
     const { id } = req.params;
 
     if (!isValidObjectId(id)) {
-      return errorResponse(
-        res,
-        400,
-        "Invalid sale item ID."
-      );
+      return errorResponse(res, 400, "Invalid sale item ID.");
     }
 
-    const saleItem = await SaleItem.findOne({
-      _id: id,
-      ...scope,
-    });
-
+    const saleItem = await SaleItem.findOne({ _id: id, ...scope });
     if (!saleItem) {
-      return errorResponse(
-        res,
-        404,
-        "Sale item not found."
-      );
+      return errorResponse(res, 404, "Sale item not found.");
     }
 
-    const sale = await Sale.findOne({
-      _id: saleItem.sale,
-      ...scope,
-    });
-
+    const sale = await Sale.findOne({ _id: saleItem.sale, ...scope });
     if (!sale) {
-      return errorResponse(
-        res,
-        404,
-        "Related sale not found."
-      );
+      return errorResponse(res, 404, "Related sale not found.");
     }
 
     if (
-      [
-        "completed",
-        "partially_returned",
-        "returned",
-        "cancelled",
-      ].includes(sale.status)
+      ["completed", "partially_returned", "returned", "cancelled"].includes(
+        sale.status
+      )
     ) {
       return errorResponse(
         res,
@@ -866,7 +830,7 @@ export const deleteSaleItem = async (req, res, next) => {
       );
     }
 
-    // ---------- RESTORE STOCK ----------
+    // Restore stock
     await adjustInventoryQuantity(
       saleItem.productInventory,
       +saleItem.quantity,
@@ -874,19 +838,18 @@ export const deleteSaleItem = async (req, res, next) => {
       scope
     );
 
-    await SaleItem.deleteOne({
-      _id: id,
-      ...scope,
+    // Restore IMEI
+    await restoreInventoryUnit({
+      imei: saleItem.imei,
+      scope,
+      userId: req.user._id,
     });
+
+    await SaleItem.deleteOne({ _id: id, ...scope });
 
     await recalculateSale(sale, scope, req.user._id);
 
-    return successResponse(
-      res,
-      200,
-      "Sale item deleted successfully.",
-      null
-    );
+    return successResponse(res, 200, "Sale item deleted successfully.", null);
   } catch (error) {
     next(error);
   }

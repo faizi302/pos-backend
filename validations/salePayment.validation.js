@@ -11,30 +11,20 @@ export const createSalePaymentSchema = Joi.object({
     "string.hex": "Invalid sale ID.",
   }),
 
-  customer: objectId
-    .allow(null)
-    .optional()
-    .messages({
-      "string.length": "Invalid customer ID.",
-      "string.hex": "Invalid customer ID.",
-    }),
+  customer: objectId.allow(null).optional().messages({
+    "string.length": "Invalid customer ID.",
+    "string.hex": "Invalid customer ID.",
+  }),
 
-  paymentNumber: Joi.string()
-    .trim()
-    .uppercase()
-    .max(50)
-    .optional(),
+  paymentNumber: Joi.string().trim().uppercase().max(50).optional(),
 
   paymentDate: Joi.date().optional(),
 
-  amount: Joi.number()
-    .positive()
-    .required()
-    .messages({
-      "any.required": "Payment amount is required.",
-      "number.base": "Payment amount must be a number.",
-      "number.positive": "Payment amount must be greater than 0.",
-    }),
+  amount: Joi.number().positive().required().messages({
+    "any.required": "Payment amount is required.",
+    "number.base": "Payment amount must be a number.",
+    "number.positive": "Payment amount must be greater than 0.",
+  }),
 
   currency: Joi.string()
     .trim()
@@ -45,9 +35,6 @@ export const createSalePaymentSchema = Joi.object({
       "string.length": "Currency must be a valid 3-letter currency code.",
     }),
 
-  // =====================================================
-  // UPDATED PAYMENT METHODS
-  // =====================================================
   paymentMethod: Joi.string()
     .valid(
       "cash",
@@ -65,33 +52,26 @@ export const createSalePaymentSchema = Joi.object({
         "Invalid payment method. Allowed: cash, bank, card, cheque, jazzcash, easypaisa, credit, other",
     }),
 
-  referenceNumber: Joi.string()
-    .trim()
-    .max(100)
-    .allow("")
-    .optional(),
+  // ========== ALLOW THESE ==========
+  status: Joi.string()
+    .valid("pending", "completed", "failed", "cancelled")
+    .optional()
+    .default("completed"),
 
-  notes: Joi.string()
-    .trim()
-    .max(1000)
-    .allow("")
-    .optional(),
+  referenceNumber: Joi.string().trim().max(100).allow("", null).optional(),
+
+  notes: Joi.string().trim().max(1000).allow("", null).optional(),
+  // ================================
 }).unknown(false);
 
 export const updateSalePaymentSchema = Joi.object({
   paymentDate: Joi.date().optional(),
 
-  amount: Joi.number()
-    .positive()
-    .optional()
-    .messages({
-      "number.base": "Payment amount must be a number.",
-      "number.positive": "Payment amount must be greater than 0.",
-    }),
+  amount: Joi.number().positive().optional().messages({
+    "number.base": "Payment amount must be a number.",
+    "number.positive": "Payment amount must be greater than 0.",
+  }),
 
-  // =====================================================
-  // UPDATED PAYMENT METHODS
-  // =====================================================
   paymentMethod: Joi.string()
     .valid(
       "cash",
@@ -109,17 +89,13 @@ export const updateSalePaymentSchema = Joi.object({
         "Invalid payment method. Allowed: cash, bank, card, cheque, jazzcash, easypaisa, credit, other",
     }),
 
-  referenceNumber: Joi.string()
-    .trim()
-    .max(100)
-    .allow("")
+  status: Joi.string()
+    .valid("pending", "completed", "failed", "cancelled")
     .optional(),
 
-  notes: Joi.string()
-    .trim()
-    .max(1000)
-    .allow("")
-    .optional(),
+  referenceNumber: Joi.string().trim().max(100).allow("", null).optional(),
+
+  notes: Joi.string().trim().max(1000).allow("", null).optional(),
 })
   .min(1)
   .unknown(false);
