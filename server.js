@@ -84,6 +84,9 @@ const allowedOrigins = [
   "http://localhost:5173",
   "http://localhost:5174",
 
+  // Production - Hostinger
+  "https://bizone.nenusoft.com",
+
   // Production frontend later:
   "https://pos-frontend-teal-tau.vercel.app",
 ];
